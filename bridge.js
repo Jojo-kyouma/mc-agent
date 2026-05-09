@@ -1,0 +1,280 @@
+const mineflayer = require('mineflayer');
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const WebSocket = require('ws');
+const vec3 = require('vec3');
+
+// --- CONFIGURATION ---
+const MINECRAFT_PORT = 64426; // Change this to the port shown when you "Open to LAN"
+const ENVIRONMENT_RADIUS = 2; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
+const BLOCK_UPDATE_RADIUS = ENVIRONMENT_RADIUS + 4; // Interaction distance (Bot can reach blocks ~4 blocks away)
+
+const bot = mineflayer.createBot({ 
+    host: 'localhost',
+    port: MINECRAFT_PORT,
+    username: 'Agent',
+    auth: 'offline',
+    version: '1.20.1'
+});
+bot.loadPlugin(pathfinder);
+
+const getItemName = (entity) => {
+    if (entity.name !== 'item') return entity.name || entity.username || 'unknown';
+    try {
+        const itemData = entity.metadata[8];
+        if (itemData && itemData.itemId !== undefined) {
+            const item = bot.registry.items[itemData.itemId];
+            return item ? item.name : 'dropped_item';
+        }
+    } catch (e) {}
+    return 'dropped_item';
+};
+
+// Encapsulate core namespaces within the bot to support the requested philosophy
+bot.once('inject_allowed', () => {
+    if (bot.pathfinder) {
+        const defaultMovements = new Movements(bot);
+        defaultMovements.allowDig = false;
+        defaultMovements.allow1by1towers = false;
+        defaultMovements.scafoldingBlocks = [];
+        bot.pathfinder.setMovements(defaultMovements);
+
+        bot.pathfinder.goals = goals;
+        bot.pathfinder.Movements = Movements;
+        bot.vec3 = vec3;
+        console.log("Pathfinder namespaces successfully attached to bot.");
+
+        // Add a pathfinder.goto helper to support 'await'able navigation in procedural scripts
+        bot.pathfinder.goto = async (goal) => {
+            bot.pathfinder.setGoal(goal);
+            return new Promise((resolve) => {
+                const finish = () => {
+                    bot.removeListener('goal_reached', finish);
+                    bot.removeListener('path_update', onPathUpdate);
+                    resolve();
+                };
+                const onPathUpdate = (res) => { if (res.status === 'noPath') finish(); };
+                bot.on('goal_reached', finish);
+                bot.on('path_update', onPathUpdate);
+            });
+        };
+    }
+
+    // Programmatic scan utility for use within behavior scripts
+    bot.scanEnv = async (radius = 32, mode = 'mine') => {
+        const botPos = bot.entity.position.floored();
+        const blocks = [];
+        const startY = (mode === 'surface') ? 0 : -radius;
+
+        for (let y = startY; y <= radius; y++) {
+            for (let x = -radius; x <= radius; x++) {
+                for (let z = -radius; z <= radius; z++) {
+                    const block = bot.blockAt(botPos.offset(x, y, z));
+                    if (block && !['air', 'cave_air', 'void_air'].includes(block.name)) {
+                        blocks.push({ 
+                            name: block.name, 
+                            pos: { x: block.position.x, y: block.position.y, z: block.position.z } 
+                        });
+                    }
+                }
+            }
+        }
+        const entities = Object.values(bot.entities)
+            .filter(e => e !== bot.entity && e.position.distanceTo(bot.entity.position) <= radius)
+            .map(e => ({
+                id: e.id,
+                name: getItemName(e),
+                dist: Math.round(e.position.distanceTo(bot.entity.position)),
+                pos: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) }
+            }));
+        return { blocks, entities };
+    };
+});
+
+const wss = new WebSocket.Server({ port: 8080 });
+
+// Mineflayer bot error handling
+bot.on('error', err => console.error(`[Mineflayer Bot Error]: ${err}`));
+bot.on('kicked', reason => console.log(`[Mineflayer Bot Kicked]: ${reason}`));
+bot.on('end', reason => console.log(`[Mineflayer Bot Disconnected]: ${reason}`));
+wss.on('error', err => console.error(`[WebSocket Server Error]: ${err}`));
+
+let pathError = false;
+let lastScanPos = null;
+
+wss.on('connection', (ws) => {
+    lastScanPos = null;
+
+    console.log("Cortex connected.");
+
+    ws.on('message', async (message) => {
+        try {
+            const data = JSON.parse(message);
+            if (data.type === 'ACTION' && data.behaviour_script) {
+                console.log(`[*] Executing: ${data.description}`);
+                
+                // Stop current actions to prepare for the new instruction
+                bot.pathfinder.setGoal(null);
+                if (bot.targetDigBlock) bot.stopDigging();
+
+                try {
+                    // Create an async function from the string provided by the LLM
+                    // We wrap the script automatically in a try-catch to report errors back to the chat
+                    const wrappedScript = `
+                        try {
+                            ${data.behaviour_script}
+                        } catch (err) {
+                            bot.chat('Script Error: ' + err.message);
+                            throw err;
+                        }
+                    `;
+                    const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+                    const execute = new AsyncFunction('bot', 'vec3', 'GoalNear', 'Movements', 'goals', wrappedScript);
+                    await execute(bot, vec3, goals.GoalNear, Movements, goals);
+                    ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
+                } catch (scriptErr) {
+                    console.error(`[Script Error]: ${scriptErr}`);
+                    ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message }));
+                }
+            }
+        } catch (err) {
+            console.log("Error parsing command message:", err);
+        }
+    });
+    
+    const onBlockUpdate = (oldBlock, newBlock) => {
+        if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
+        if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
+
+        const pos = { x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z };
+        const isAir = ['air', 'cave_air', 'void_air'].includes(newBlock.name);
+        
+        const payload = { type: 'BLOCK_UPDATE', pos };
+        if (!isAir) payload.block = { name: newBlock.name, pos };
+
+        ws.send(JSON.stringify(payload));
+    };
+
+    const onEntityUpdate = (entity) => {
+        if (ws.readyState !== WebSocket.OPEN || !bot.entity || entity === bot.entity) return;
+        
+        const isGone = !bot.entities[entity.id];
+        if (!isGone && entity.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
+
+        const payload = { type: 'ENTITY_UPDATE', id: entity.id };
+        if (!isGone) {
+            payload.entity = {
+                id: entity.id,
+                name: getItemName(entity),
+                dist: Math.round(entity.position.distanceTo(bot.entity.position)),
+                pos: { x: Math.round(entity.position.x), y: Math.round(entity.position.y), z: Math.round(entity.position.z) }
+            };
+        }
+        ws.send(JSON.stringify(payload));
+    };
+
+    bot.on('blockUpdate', onBlockUpdate);
+    bot.on('entitySpawn', onEntityUpdate);
+    bot.on('entityGone', onEntityUpdate);
+
+    const sendStatus = () => {
+        const status = {
+            type: 'STATUS',
+            health: bot.health,
+            food: bot.food,
+            saturation: bot.foodSaturation,
+            inventory: bot.inventory.items().map(item => ({
+                name: item.name,
+                count: item.count,
+                slot: item.slot
+            })),
+            heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
+            position: bot.entity.position
+        };
+        ws.send(JSON.stringify(status));
+    };
+
+    bot.on('health', sendStatus);
+    bot.on('playerCollect', sendStatus);
+
+    const onChat = (username, message) => {
+        if (username === bot.username) return;
+        let processedMessage = message;
+        if (processedMessage.endsWith(']') && !processedMessage.startsWith('[')) {
+            processedMessage = processedMessage.slice(0, -1);
+        }
+        ws.send(JSON.stringify({ type: 'CHAT', username: username, message: processedMessage }));
+    };
+    bot.on('chat', onChat);
+
+    const sendEnvironment = (radius, force = false) => {
+        if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
+
+        // Ensure radius defaults to ENVIRONMENT_RADIUS if not a positive number
+        // This handles cases where radius is undefined, 0, or an event object.
+        const actualRadius = (typeof radius === 'number' && radius > 0) 
+            ? radius 
+            : ENVIRONMENT_RADIUS;
+        const currentPos = bot.entity.position;
+
+        if (!force && lastScanPos) {
+            const dx = Math.abs(currentPos.x - lastScanPos.x);
+            const dz = Math.abs(currentPos.z - lastScanPos.z);
+            const dy = currentPos.y - lastScanPos.y;
+            // Only scan if the bot has left the previous horizontal area or the vertical slice
+            if (dx <= actualRadius && dz <= actualRadius && dy >= -1 && dy <= 2) return;
+        }
+
+        const botPos = currentPos.floored();
+        const blocks = [];
+
+        // Scan 4 layers vertically within the defined horizontal radius
+        for (let y = -1; y <= 2; y++) {
+            for (let x = -actualRadius; x <= actualRadius; x++) {
+                for (let z = -actualRadius; z <= actualRadius; z++) {
+                    const block = bot.blockAt(botPos.offset(x, y, z));
+                    if (block && block.name !== 'air' && block.name !== 'cave_air' && block.name !== 'void_air') {
+                        blocks.push({ 
+                            name: block.name, 
+                            pos: { x: block.position.x, y: block.position.y, z: block.position.z } 
+                        });
+                    }
+                }
+            }
+        }
+        
+        const entities = Object.values(bot.entities)
+            .filter(e => e !== bot.entity && e.position.distanceTo(bot.entity.position) < 16)
+            .map(e => ({
+                id: e.id,
+                name: getItemName(e),
+                dist: Math.round(e.position.distanceTo(bot.entity.position)),
+                pos: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) }
+            }))
+            .sort((a, b) => a.dist - b.dist)
+            .slice(0, 5);
+
+        // Prevent sending empty environments caused by unloaded chunks unless forced.
+        // Standard Minecraft worlds always have blocks (floor) nearby.
+        if (!force && blocks.length === 0 && entities.length === 0) return;
+
+        lastScanPos = currentPos.clone();
+        ws.send(JSON.stringify({ type: 'ENVIRONMENT', entities, blocks }));
+    };
+
+    bot.on('move', sendEnvironment);
+    bot.on('spawn', sendEnvironment);
+
+    ws.on('close', () => {
+        console.log("Cortex disconnected from WebSocket.");
+        // Cleanup listeners to prevent memory leaks and redundant processing
+        bot.removeListener('blockUpdate', onBlockUpdate);
+        bot.removeListener('entitySpawn', onEntityUpdate);
+        bot.removeListener('entityGone', onEntityUpdate);
+        bot.removeListener('health', sendStatus);
+        bot.removeListener('playerCollect', sendStatus);
+        bot.removeListener('chat', onChat);
+        bot.removeListener('move', sendEnvironment);
+        bot.removeListener('spawn', sendEnvironment);
+    });
+
+});

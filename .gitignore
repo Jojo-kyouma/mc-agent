@@ -1,0 +1,58 @@
+# --- Python & Virtual Environments ---
+# Folders
+venv/
+.venv/
+env/
+.env/
+bin/
+include/
+lib/
+share/
+pyvenv.cfg
+pip-selfcheck.json
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Node.js / NPM ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Environment & Secrets ---
+# Never commit sensitive credentials!
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# --- OS & IDE Specific ---
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# VS Code / JetBrains
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Build & Distribution ---
+dist/
+build/
+*.egg-info/
+
+# --- Misc ---
+deprecated/
+llm_debug.txt
