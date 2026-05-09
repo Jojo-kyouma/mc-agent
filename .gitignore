@@ -56,3 +56,4 @@ build/
 # --- Misc ---
 deprecated/
 llm_debug.txt
+working_memory.json
