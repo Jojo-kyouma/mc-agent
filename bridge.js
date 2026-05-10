@@ -57,8 +57,10 @@ bot.once('inject_allowed', () => {
                     bot.removeListener('path_update', onPathUpdate);
                     bot.removeListener('path_stop', onPathStop);
 
+                    bot.pathfinder.setGoal(null);
+                    bot.clearControlStates();  
+
                     if (error) {
-                        bot.pathfinder.setGoal(null);
                         reject(new Error(error));
                     } else {
                         resolve();
@@ -129,6 +131,7 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
             if (data.type === 'ACTION' && data.behaviour_script) {
+
                 console.log(`[*] Executing: ${data.description}`);
                 
                 // Stop current actions to prepare for the new instruction
@@ -151,6 +154,7 @@ wss.on('connection', (ws) => {
                     console.error(`[Script Error]: ${scriptErr}`);
                     ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message, description: data.description }));
                 } finally {
+                    isExecuting = false;
                     ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
                 }
             }

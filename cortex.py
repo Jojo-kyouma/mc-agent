@@ -266,7 +266,7 @@ class Cortex:
                         if f"Attempted: {desc}" in self.memory.episodic[i]:
                             self.memory.episodic[i] = self.memory.episodic[i].replace("Attempted:", "Failed:", 1)
                             break
-                self.memory.update_slot(MentalSlot.EPISODIC, f"{msg}")
+                self.memory.update_slot(MentalSlot.EPISODIC, f"Feedback Error: {msg}")
             self.save_working_memory()
 
     """ --- Save/Load Working Memory --- """
@@ -402,7 +402,7 @@ The `bot` instance is your ONLY interface. It has been pre-configured with the f
 1. **Async Workflow**: Every method that interacts with the game world MUST be `await`ed.
 2. **No External Imports**: Use only the properties of `bot`. Do not use `require`.
 3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
-4. **Robustness & Feedback**: Wrap EVERY individual interaction (e.g., `bot.dig`, `bot.placeBlock`, `bot.equip`, `bot.pathfinder.goto`) in a `try-catch` block. In the `catch` block, you MUST call `bot.recordError(error.message)`. This ensures specific environmental failures are saved to your episodic memory for future reasoning.
+4. **Robustness & Feedback**: Wrap EVERY individual interaction in a `try-catch` block. For sequential actions (like move -> dig -> collect), you MUST use nested `try-catch` blocks. In every `catch` block, call `bot.recordError(error.message)` with a prefix describing the step (e.g., 'Dig failed: '). This ensures specific failures are saved to your episodic memory for future reasoning.
 
 ### EXAMPLE SCRIPT:
 const logs = ['oak_log', 'oak_wood', 'birch_log']; const data = await bot.scanEnv(64, 'surface'); const targets = data.blocks.filter(b => logs.includes(b.name)); if (targets.length === 0) { bot.chat('No logs found.'); } else { bot.chat(`Harvesting ${targets.length} blocks.`); for (const t of targets) { const b = bot.blockAt(t.pos); if (!b || b.name.includes('air')) continue; try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(t.pos.x, t.pos.y, t.pos.z, 2)); await bot.waitForTicks(3); try { await bot.dig(b); await bot.waitForTicks(5); try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(t.pos.x, t.pos.y, t.pos.z, 0.5)); await bot.waitForTicks(3); } catch (err) { bot.recordError(`Collect failed: ${err.message}`); } } catch (e) { bot.recordError(`Dig failed: ${e.message}`); } } catch (e) { bot.recordError(`Move failed: ${e.message}`); } } bot.chat('Operation complete.'); }
@@ -441,12 +441,8 @@ async def main():
     nexus.thinking_trigger.set()
 
     while True:
-        # Wait for a signal (Finished action, Error, or Social interaction)
-        # Includes a safety timeout to ensure the agent doesn't stay idle if a signal is lost
-        try:
-            await asyncio.wait_for(nexus.thinking_trigger.wait(), timeout=30)
-        except asyncio.TimeoutError:
-            pass
+        # Strictly wait for a signal (Finished action or Error) before thinking again.
+        await nexus.thinking_trigger.wait()
         
         nexus.thinking_trigger.clear()
         action, raw_json, prompt = await nexus.think()
