@@ -32,8 +32,8 @@ const getItemName = (entity) => {
 bot.once('inject_allowed', () => {
     if (bot.pathfinder) {
         const defaultMovements = new Movements(bot);
-        defaultMovements.allowDig = false;
-        defaultMovements.allow1by1towers = false;
+        defaultMovements.allowDig = true;
+        defaultMovements.allow1by1towers = true;
         defaultMovements.allowSprinting = false; // Mimic regular human walking
         defaultMovements.scafoldingBlocks = [];
         bot.pathfinder.setMovements(defaultMovements);
