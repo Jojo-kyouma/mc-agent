@@ -54,3 +54,6 @@ In alignment with functionalist philosophy, this project treats consciousness an
 This project serves as a low-cost testbed for **Embodied AI**. While traditional AI exists in a vacuum of text, this agent must navigate the "friction" of a physical world (gravity, collisions, and pathfinding limits).
 * **Reasoning-to-Action Translation:** The core challenge addressed is the middleware layer—converting high-level intent (e.g., "secure resources") into precise motor commands (e.g., vector-based movement and block manipulation).
 * **Robotics Prototyping:** By simulating the constraints of a humanoid body, the project develops logic for error recovery and adaptation that is directly applicable to real-world humanoid robotics and industrial automation.
+
+### Social Experiment
+Project is quite resource-efficient. It might be possible to instantiate 100 bots in the minecraft world, encourage them to be social, and watch them build a civilisation together.
