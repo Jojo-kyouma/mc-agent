@@ -47,7 +47,7 @@ class WorkingMemory:
     # Optimized limits for different cognitive functions
     SLOT_LIMITS = {
         MentalSlot.SOCIAL: 25,      # Deeper conversation history
-        MentalSlot.EPISODIC: 100,    # Longer action history for context
+        MentalSlot.EPISODIC: 40,    # Longer action history for context
         MentalSlot.REFLECTION: 15,  # Recent insights
         MentalSlot.SELF_CONCEPT: 3, # Core identity/persona (stable)
         MentalSlot.STRATEGY: 5      # Strategic vision (stable)

@@ -41,6 +41,7 @@ bot.once('inject_allowed', () => {
         bot.pathfinder.goals = goals;
         bot.pathfinder.Movements = Movements;
         bot.vec3 = vec3;
+
         console.log("Pathfinder namespaces successfully attached to bot.");
 
         bot.pathfinder.goto = async (goal) => {
@@ -67,7 +68,11 @@ bot.once('inject_allowed', () => {
 
                 const onGoalReached = () => cleanup();
                 const onPathStop = () => cleanup('Pathfinding stopped.');
-                const onPathUpdate = (res) => { if (res.status === 'noPath') cleanup('No path.'); };
+                const onPathUpdate = (res) => {
+                    if (res.status === 'noPath') cleanup('No path found to goal.');
+                    else if (res.status === 'timeout') cleanup('Pathfinding search timed out.');
+                    else if (res.status === 'stuck') cleanup('Bot is stuck while pathfinding.');
+                };
 
                 bot.on('goal_reached', onGoalReached);
                 bot.on('path_update', onPathUpdate);
