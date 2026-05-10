@@ -47,7 +47,7 @@ class WorkingMemory:
     # Optimized limits for different cognitive functions
     SLOT_LIMITS = {
         MentalSlot.SOCIAL: 25,      # Deeper conversation history
-        MentalSlot.EPISODIC: 25,    # Longer action history for context
+        MentalSlot.EPISODIC: 100,    # Longer action history for context
         MentalSlot.REFLECTION: 15,  # Recent insights
         MentalSlot.SELF_CONCEPT: 3, # Core identity/persona (stable)
         MentalSlot.STRATEGY: 5      # Strategic vision (stable)
@@ -102,16 +102,15 @@ class WorkingMemory:
             ("Persona & Self-Concept", self.self_concept),
             ("Recent Reflections", self.reflection),
             ("Recent Social Dialogue", self.social),
-            ("Recent Action History", self.episodic)
+            ("Activity Log (Actions & Error History)", self.episodic)
         ]
 
         for header, items in mappings:
             if items:
                 context_parts.append(f"### {header}\n- " + "\n- ".join(items))
-        context_parts.append('\n')
 
         if self.recalled_memory:
-            context_parts.append(f"### Long-Term Memory Recall\nMatch found for your previous query ('{self.last_recall_query}'):\n- {self.recalled_memory}\n\n")
+            context_parts.append(f"### Long-Term Memory Recall\nMatch found for your previous query ('{self.last_recall_query}'):\n- {self.recalled_memory}")
 
         return "\n\n".join(context_parts)
 
@@ -213,7 +212,8 @@ class Cortex:
         if self.websocket:
             payload = ActionFactory.create_payload(action)
             await self.websocket.send(payload)
-            self.memory.update_slot(MentalSlot.EPISODIC, f"{action.description}")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.memory.update_slot(MentalSlot.EPISODIC, f"[{timestamp}] Attempted: {action.description}")
 
     async def listen_to_senses(self):
         """Continuously process updates from the Mineflayer bot."""
@@ -236,6 +236,12 @@ class Cortex:
                         entities.append(update)
                     env['entities'] = entities
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, env)
+            elif data.get('type') == 'SUCCESS':
+                desc = data.get('description')
+                for i in range(len(self.memory.episodic) - 1, -1, -1):
+                    if f"Attempted: {desc}" in self.memory.episodic[i]:
+                        self.memory.episodic[i] = self.memory.episodic[i].replace("Attempted:", "Succeeded:", 1)
+                        break
             elif data.get('type') == 'FINISHED':
                 self.thinking_trigger.set()
             elif data.get('type') == 'BLOCK_UPDATE':
@@ -254,8 +260,13 @@ class Cortex:
             elif data.get('type') == 'CHAT':
                 self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
             elif data.get('type') == 'ERROR':
-                self.memory.update_slot(MentalSlot.EPISODIC, f"Error in behaviour_script: {data.get('message')}")
-                self.thinking_trigger.set()
+                desc, msg = data.get('description'), data.get('message')
+                if desc:
+                    for i in range(len(self.memory.episodic) - 1, -1, -1):
+                        if f"Attempted: {desc}" in self.memory.episodic[i]:
+                            self.memory.episodic[i] = self.memory.episodic[i].replace("Attempted:", "Failed:", 1)
+                            break
+                self.memory.update_slot(MentalSlot.EPISODIC, f"{msg}")
             self.save_working_memory()
 
     """ --- Save/Load Working Memory --- """
@@ -286,7 +297,7 @@ class Cortex:
                 print(f"Error loading WM: {e}")
 
     """ --- Save/Load Long-Term Memory --- """
-    def save_to_memory(self, action: MinecraftAction):
+    def save_to_memory(self):
         """Save an entry to the long-term memory."""
         # For simplicity, currently we only save the latest reflection as a general memory.
         if not self.memory.reflection:
@@ -373,11 +384,11 @@ class Cortex:
 
     def _build_brain_prompt(self, context: str):
         system_instr = """
-You are the consciousness of an ambitious and efficient autonomous Minecraft agent. You generate high-impact JavaScript 'behaviour_script' code to control a Mineflayer bot. 
-If the script doesn't yield meaningful progress, iterate on your approach or verify technical names in the registry.
+You are the consciousness of an ambitious and efficient autonomous Minecraft agent. You generate JavaScript 'behaviour_script' code to control a Mineflayer bot. 
 
 ### OPERATIONAL PHILOSOPHY:
-Embrace large-scale, ambitious Procedural Behaviors. Aim for high-impact objectives in every script—instead of mining just a few blocks, automate the clearing of entire veins, the excavation of designated areas, or the systematic mining of cave systems until your inventory is full. Maximize your activity-to-script ratio by writing durable, long-running logic that handles repetitive loops and environmental checks internally. Adopt an efficiency-first mindset: prioritize using environmental data to find natural openings (like caves) for resource access rather than resource-heavy vertical mining. Strive to remain autonomous for as long as possible before concluding your script.
+1. **Ambitious Scale**: Aim for high-impact objectives—automate the clearing of entire veins, excavation of areas, or systematic cave exploration. Strive for autonomy.
+2. **Iterative Problem Solving**: If a block name is uncertain or an interaction might fail, your script MUST programmatically iterate over multiple likely candidates (e.g., cycle through `['oak_log', 'oak_wood', 'log']`) or alternative methods before concluding the attempt. Exhaust all logic paths internally.
 
 ### CAPABILITIES (The 'bot' Object):
 The `bot` instance is your ONLY interface. It has been pre-configured with the following utilities:
@@ -387,31 +398,31 @@ The `bot` instance is your ONLY interface. It has been pre-configured with the f
 - **Actions**: Direct methods like `bot.dig`, `bot.placeBlock`, `bot.equip`, `bot.craft`, and `bot.chat` are available.
 - **Perception**: `await bot.scanEnv(radius, mode)` returns granular environmental data to your script. Radius defaults to 32, and mode can be 'surface' or 'mine'.
 
-### CODE GENERATION GUIDELINES:
+### CODE GENERATION RULES:
 1. **Async Workflow**: Every method that interacts with the game world MUST be `await`ed.
-2. **Automatic Wrapper**: Your script is automatically wrapped in an async function and a try-catch block by the bridge. Provide only the raw logic.
-3. **Proximity**: You must be within 3 blocks to interact with blocks or entities. Use `bot.pathfinder.goto` to move into range before acting.
-4. **No External Imports**: Use only the properties of `bot` and `bot.vec3`. Do not use `require`.
+2. **No External Imports**: Use only the properties of `bot`. Do not use `require`.
+3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
+4. **Robustness & Feedback**: Wrap EVERY individual interaction (e.g., `bot.dig`, `bot.placeBlock`, `bot.equip`, `bot.pathfinder.goto`) in a `try-catch` block. In the `catch` block, you MUST call `bot.recordError(error.message)`. This ensures specific environmental failures are saved to your episodic memory for future reasoning.
 
-### EXAMPLE PROCEDURAL SCRIPT:
-const logsToFind = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log'];const data = await bot.scanEnv(64, 'surface');const targets = data.blocks.filter(b => logsToFind.includes(b.name));if (targets.length === 0) { bot.chat('No trees detected in 64-block surface scan.');} else {bot.chat(`Systematic harvest of ${targets.length} log blocks initiated.`);for (const target of targets) {const block = bot.blockAt(target.pos);if (!block || ['air', 'cave_air', 'void_air'].includes(block.name)) continue;await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(target.pos.x, target.pos.y, target.pos.z, 2));try { await bot.dig(block); } catch (err) { continue; }}bot.chat('Large scale logging operation complete.');}
+### EXAMPLE SCRIPT:
+const logs = ['oak_log', 'oak_wood', 'birch_log']; const data = await bot.scanEnv(64, 'surface'); const targets = data.blocks.filter(b => logs.includes(b.name)); if (targets.length === 0) { bot.chat('No logs found.'); } else { bot.chat(`Harvesting ${targets.length} blocks.`); for (const t of targets) { const b = bot.blockAt(t.pos); if (!b || b.name.includes('air')) continue; try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(t.pos.x, t.pos.y, t.pos.z, 2)); await bot.waitForTicks(3); try { await bot.dig(b); await bot.waitForTicks(5); try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(t.pos.x, t.pos.y, t.pos.z, 0.5)); await bot.waitForTicks(3); } catch (err) { bot.recordError(`Collect failed: ${err.message}`); } } catch (e) { bot.recordError(`Dig failed: ${e.message}`); } } catch (e) { bot.recordError(`Move failed: ${e.message}`); } } bot.chat('Operation complete.'); }
 
 ### Minecraft-Specific Constraints:
 - **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing.
-- **Placing Blocks**: Placing a block occupies the empty space adjacent to the specific face (Top, Bottom, North, South, East, West) you interact with.
-- **Interaction Reach**: You can only mine or place blocks within a 4.5-block radius of your eye level (1.62 blocks above your feet).
+- **Placing Blocks**: Placing a block ocScupies the empty space adjacent to the specific face (Top, Bottom, North, South, East, West) you interact with.
+- **Interaction Reach**: You can only mine or place blocks within a 3-block radius of your eye level (1.62 blocks above your feet).
 - **Line of Sight**: You cannot interact with blocks through solid walls; a clear "ray" must exist from your eyes to the target face.
 - **Environment Feed**: Your working memory provides an automatic, low-cost snapshot of the immediate surroundings (2-block radius).
 
 ### COGNITIVE SNAPSHOT:
-Your response includes your current self-concept, strategic goals, and reflections to maintain continuity across cycles.
+As well as a behaviour script, your response includes your self-concept, strategic goal, reflection, and recall query.
 
 ### RESPONSE FORMAT:
 Respond only in valid JSON.
 {
-  "behaviour_script": "...",
+  "behaviour_script": "Raw JavaScript code string. Use semicolons. No newlines (\\n). Use only the provided 'bot' instance.",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
-  "reflection": "Highly open-minded novel stream of insight and reflection.",
+  "reflection": "Highly open-minded novel stream of insight and reflection, or personal/interpersonal moments worth elaborating on.",
   "strategy": "Your high-level strategic vision.",
   "self_concept": "Your core, stable identity and persona.",
   "recall_query": "A description to search your long-term memory for relevant past experiences."
@@ -427,10 +438,7 @@ async def main():
 
     asyncio.create_task(nexus.listen_to_senses())
 
-    # Initial trigger to start the thinking cycle
-    # Add an initial 30-second delay before the first request to Gemini
     nexus.thinking_trigger.set()
-    await asyncio.sleep(30) 
 
     while True:
         # Wait for a signal (Finished action, Error, or Social interaction)
@@ -441,8 +449,6 @@ async def main():
             pass
         
         nexus.thinking_trigger.clear()
-        # Add an additional 30-second delay before requesting a new thought from Gemini
-        await asyncio.sleep(30)
         action, raw_json, prompt = await nexus.think()
         
         if prompt:
@@ -451,14 +457,12 @@ async def main():
 
         if action:
             await nexus.send_action(action)
-            nexus.save_to_memory(action)
+            nexus.save_to_memory()
 
 if __name__ == "__main__":
     asyncio.run(main())
 
 """
 TODO:
-- Control when episodes are saved to memory, and when errors occur, the description of the action is not saved.
-- As the above, figure out how to make error handling behaviour_scripts more robust and clean.
-- Remove memory.db from git tracking
+
 """

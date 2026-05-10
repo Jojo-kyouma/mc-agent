@@ -4,7 +4,7 @@ const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 64426; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 62374; // Change this to the port shown when you "Open to LAN"
 const ENVIRONMENT_RADIUS = 2; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
 const BLOCK_UPDATE_RADIUS = ENVIRONMENT_RADIUS + 4; // Interaction distance (Bot can reach blocks ~4 blocks away)
 
@@ -29,12 +29,12 @@ const getItemName = (entity) => {
     return 'dropped_item';
 };
 
-// Encapsulate core namespaces within the bot to support the requested philosophy
 bot.once('inject_allowed', () => {
     if (bot.pathfinder) {
         const defaultMovements = new Movements(bot);
         defaultMovements.allowDig = false;
         defaultMovements.allow1by1towers = false;
+        defaultMovements.allowSprinting = false; // Mimic regular human walking
         defaultMovements.scafoldingBlocks = [];
         bot.pathfinder.setMovements(defaultMovements);
 
@@ -43,18 +43,37 @@ bot.once('inject_allowed', () => {
         bot.vec3 = vec3;
         console.log("Pathfinder namespaces successfully attached to bot.");
 
-        // Add a pathfinder.goto helper to support 'await'able navigation in procedural scripts
         bot.pathfinder.goto = async (goal) => {
             bot.pathfinder.setGoal(goal);
-            return new Promise((resolve) => {
-                const finish = () => {
-                    bot.removeListener('goal_reached', finish);
+            
+            return new Promise((resolve, reject) => {
+                let completed = false;
+
+                const cleanup = (error = null) => {
+                    if (completed) return;
+                    completed = true;
+
+                    bot.removeListener('goal_reached', onGoalReached);
                     bot.removeListener('path_update', onPathUpdate);
-                    resolve();
+                    bot.removeListener('path_stop', onPathStop);
+
+                    if (error) {
+                        bot.pathfinder.setGoal(null);
+                        reject(new Error(error));
+                    } else {
+                        resolve();
+                    }
                 };
-                const onPathUpdate = (res) => { if (res.status === 'noPath') finish(); };
-                bot.on('goal_reached', finish);
+
+                const onGoalReached = () => cleanup();
+                const onPathStop = () => cleanup('Pathfinding was interrupted externally.');
+                const onPathUpdate = (res) => { 
+                    if (res.status === 'noPath') cleanup('No path found to target.'); 
+                };
+
+                bot.on('goal_reached', onGoalReached);
                 bot.on('path_update', onPathUpdate);
+                bot.on('path_stop', onPathStop);
             });
         };
     }
@@ -116,24 +135,23 @@ wss.on('connection', (ws) => {
                 bot.pathfinder.setGoal(null);
                 if (bot.targetDigBlock) bot.stopDigging();
 
+                // Allow scripts to report internal errors to episodic memory
+                bot.recordError = (msg) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ERROR', message: msg, description: data.description }));
+                    }
+                };
+
                 try {
-                    // Create an async function from the string provided by the LLM
-                    // We wrap the script automatically in a try-catch to report errors back to the chat
-                    const wrappedScript = `
-                        try {
-                            ${data.behaviour_script}
-                        } catch (err) {
-                            bot.chat('Script Error: ' + err.message);
-                            throw err;
-                        }
-                    `;
                     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-                    const execute = new AsyncFunction('bot', 'vec3', 'GoalNear', 'Movements', 'goals', wrappedScript);
+                    const execute = new AsyncFunction('bot', 'vec3', 'GoalNear', 'Movements', 'goals', data.behaviour_script);
                     await execute(bot, vec3, goals.GoalNear, Movements, goals);
-                    ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
+                    ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
                 } catch (scriptErr) {
                     console.error(`[Script Error]: ${scriptErr}`);
-                    ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message }));
+                    ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message, description: data.description }));
+                } finally {
+                    ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
                 }
             }
         } catch (err) {
