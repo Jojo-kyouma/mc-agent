@@ -44,8 +44,6 @@ bot.once('inject_allowed', () => {
         console.log("Pathfinder namespaces successfully attached to bot.");
 
         bot.pathfinder.goto = async (goal) => {
-            bot.pathfinder.setGoal(goal);
-            
             return new Promise((resolve, reject) => {
                 let completed = false;
 
@@ -74,39 +72,11 @@ bot.once('inject_allowed', () => {
                 bot.on('goal_reached', onGoalReached);
                 bot.on('path_update', onPathUpdate);
                 bot.on('path_stop', onPathStop);
+
+                bot.pathfinder.setGoal(goal);
             });
         };
     }
-
-    // Programmatic scan utility for use within behavior scripts
-    bot.scanEnv = async (radius = 32, mode = 'mine') => {
-        const botPos = bot.entity.position.floored();
-        const blocks = [];
-        const startY = (mode === 'surface') ? 0 : -radius;
-
-        for (let y = startY; y <= radius; y++) {
-            for (let x = -radius; x <= radius; x++) {
-                for (let z = -radius; z <= radius; z++) {
-                    const block = bot.blockAt(botPos.offset(x, y, z));
-                    if (block && !['air', 'cave_air', 'void_air'].includes(block.name)) {
-                        blocks.push({ 
-                            name: block.name, 
-                            pos: { x: block.position.x, y: block.position.y, z: block.position.z } 
-                        });
-                    }
-                }
-            }
-        }
-        const entities = Object.values(bot.entities)
-            .filter(e => e !== bot.entity && e.position.distanceTo(bot.entity.position) <= radius)
-            .map(e => ({
-                id: e.id,
-                name: getItemName(e),
-                dist: Math.round(e.position.distanceTo(bot.entity.position)),
-                pos: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) }
-            }));
-        return { blocks, entities };
-    };
 });
 
 const wss = new WebSocket.Server({ port: 8080 });
@@ -164,11 +134,11 @@ wss.on('connection', (ws) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
         if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
 
-        const pos = { x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z };
+        const position = newBlock.position;
         const isAir = ['air', 'cave_air', 'void_air'].includes(newBlock.name);
         
-        const payload = { type: 'BLOCK_UPDATE', pos };
-        if (!isAir) payload.block = { name: newBlock.name, pos };
+        const payload = { type: 'BLOCK_UPDATE', position };
+        if (!isAir) payload.block = { name: newBlock.name, position };
 
         ws.send(JSON.stringify(payload));
     };
@@ -185,7 +155,7 @@ wss.on('connection', (ws) => {
                 id: entity.id,
                 name: getItemName(entity),
                 dist: Math.round(entity.position.distanceTo(bot.entity.position)),
-                pos: { x: Math.round(entity.position.x), y: Math.round(entity.position.y), z: Math.round(entity.position.z) }
+                position: entity.position
             };
         }
         ws.send(JSON.stringify(payload));
@@ -254,7 +224,7 @@ wss.on('connection', (ws) => {
                     if (block && block.name !== 'air' && block.name !== 'cave_air' && block.name !== 'void_air') {
                         blocks.push({ 
                             name: block.name, 
-                            pos: { x: block.position.x, y: block.position.y, z: block.position.z } 
+                            position: block.position 
                         });
                     }
                 }
@@ -267,7 +237,7 @@ wss.on('connection', (ws) => {
                 id: e.id,
                 name: getItemName(e),
                 dist: Math.round(e.position.distanceTo(bot.entity.position)),
-                pos: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) }
+                position: e.position
             }))
             .sort((a, b) => a.dist - b.dist)
             .slice(0, 5);

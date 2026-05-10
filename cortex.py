@@ -245,13 +245,13 @@ class Cortex:
             elif data.get('type') == 'FINISHED':
                 self.thinking_trigger.set()
             elif data.get('type') == 'BLOCK_UPDATE':
-                pos = data.get('pos')
+                pos = data.get('position')
                 block_data = data.get('block') # None if the block was removed/is air
                 env = self.memory.environment
                 if isinstance(env, dict):
                     blocks = env.get('blocks', [])
                     # Remove existing block at this position
-                    blocks = [b for b in blocks if b.get('pos') != pos]
+                    blocks = [b for b in blocks if b.get('position') != pos]
                     # Add the new block data if provided by the bridge
                     if block_data:
                         blocks.append(block_data)
@@ -396,16 +396,16 @@ The `bot` instance is your ONLY interface. It has been pre-configured with the f
 - **Data**: `bot.registry` provides all game data (blocks, items, recipes).
 - **Math**: `bot.vec3` provides coordinate utilities (e.g., `new bot.vec3(x, y, z)`).
 - **Actions**: Direct methods like `bot.dig`, `bot.placeBlock`, `bot.equip`, `bot.craft`, and `bot.chat` are available.
-- **Perception**: `await bot.scanEnv(radius, mode)` returns granular environmental data to your script. Radius defaults to 32, and mode can be 'surface' or 'mine'.
+- **Perception**: `bot.findBlocks(options)` is a native function to locate blocks efficiently. It returns an array of `bot.vec3` positions. Example: `bot.findBlocks({ matching: b => ['oak_log'].includes(b.name), maxDistance: 32, count: 10 })`.
 
 ### CODE GENERATION RULES:
-1. **Async Workflow**: Every method that interacts with the game world MUST be `await`ed.
+1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
 2. **No External Imports**: Use only the properties of `bot`. Do not use `require`.
 3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
 4. **Robustness & Feedback**: Wrap EVERY individual interaction in a `try-catch` block. For sequential actions (like move -> dig -> collect), you MUST use nested `try-catch` blocks. In every `catch` block, call `bot.recordError(error.message)` with a prefix describing the step (e.g., 'Dig failed: '). This ensures specific failures are saved to your episodic memory for future reasoning.
 
 ### EXAMPLE SCRIPT:
-const logs = ['oak_log', 'oak_wood', 'birch_log']; const data = await bot.scanEnv(64, 'surface'); const targets = data.blocks.filter(b => logs.includes(b.name)); if (targets.length === 0) { bot.chat('No logs found.'); } else { bot.chat(`Harvesting ${targets.length} blocks.`); for (const t of targets) { const b = bot.blockAt(t.pos); if (!b || b.name.includes('air')) continue; try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(t.pos.x, t.pos.y, t.pos.z, 2)); await bot.waitForTicks(3); try { await bot.dig(b); await bot.waitForTicks(5); try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(t.pos.x, t.pos.y, t.pos.z, 0.5)); await bot.waitForTicks(3); } catch (err) { bot.recordError(`Collect failed: ${err.message}`); } } catch (e) { bot.recordError(`Dig failed: ${e.message}`); } } catch (e) { bot.recordError(`Move failed: ${e.message}`); } } bot.chat('Operation complete.'); }
+async function gather() { const logNames = ['oak_log', 'birch_log']; const targets = bot.findBlocks({ matching: (block) => logNames.includes(block.name), maxDistance: 64, count: 5 }); if (targets.length === 0) { bot.chat('No logs found.'); } else { for (const pos of targets) { try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(pos.x, pos.y, pos.z, 2)); await bot.waitForTicks(3); try { const b = bot.blockAt(pos); if (!b || b.name.includes('air')) continue; await bot.dig(b); await bot.waitForTicks(5); try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(pos.x, pos.y, pos.z, 0.5)); await bot.waitForTicks(3); } catch (err) { bot.recordError(`Collect failed: ${err.message}`); } } catch (e) { bot.recordError(`Dig failed: ${e.message}`); } } catch (e) { bot.recordError(`Move failed: ${e.message}`); } } bot.chat('Operation complete.'); } } await gather();
 
 ### Minecraft-Specific Constraints:
 - **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing.
