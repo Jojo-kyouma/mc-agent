@@ -18,6 +18,18 @@ from dotenv import load_dotenv
 LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 
+class Priority(Enum):
+    IDLE = 0
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    CRITICAL = 4
+
+    def __lt__(self, other):
+        if self.__class__ is other.__class__:
+            return self.value < other.value
+        return NotImplemented
+
 class MentalSlot(Enum):
     """Working-memory categories."""
     # Cognition. Using prompt-engineering we ask if these should be populated with new entries.
@@ -158,6 +170,10 @@ class Cortex:
         self.actuator_path = actuator_path
         self.thinking_trigger = asyncio.Event()
 
+        self.current_priority = Priority.IDLE
+        self.chat_counter = 0
+        self.error_counter = 0
+
         self._load_working_memory()
         self._init_db()
         # Initialize embedding model for long-term memory from records
@@ -219,12 +235,33 @@ class Cortex:
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.memory.update_slot(MentalSlot.EPISODIC, f"[{timestamp}] Attempted: {action.description}")
 
+    async def send_abort(self):
+        """Sends an immediate abort signal to the actuator."""
+        if self.websocket:
+            await self.websocket.send(json.dumps({"type": "ABORT"}))
+
+    def _check_interrupt(self, event_priority: Priority, reason: str):
+        if event_priority > self.current_priority:
+            print(f"[*] RE-PRIORITIZE: Interrupting {self.current_priority.name} for {event_priority.name} ({reason})")
+            asyncio.create_task(self.send_abort())
+            self.thinking_trigger.set()
+
     async def listen_to_senses(self):
         """Continuously process updates from the Mineflayer bot."""
         async for message in self.websocket:
             data = json.loads(message)
             if data.get('type') == 'STATUS':
                 self.memory.update_slot(MentalSlot.STATUS, data)
+                
+                # CRITICAL: Health < 10
+                if data.get('health', 20) < 10:
+                    self._check_interrupt(Priority.CRITICAL, "Low health")
+                
+                # HIGH: Inventory Full
+                inv = data.get('inventory', [])
+                if len(inv) >= 36:
+                    self._check_interrupt(Priority.HIGH, "Inventory full")
+
             elif data.get('type') == 'ENVIRONMENT':
                 self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
             elif data.get('type') == 'ENTITY_UPDATE':
@@ -248,8 +285,10 @@ class Cortex:
                         break
                 if self.memory.plan:
                     self.memory.plan.pop()
+                self.current_priority = Priority.IDLE
             elif data.get('type') == 'FINISHED':
                 self.thinking_trigger.set()
+                self.current_priority = Priority.IDLE
             elif data.get('type') == 'BLOCK_UPDATE':
                 pos = data.get('position')
                 block_data = data.get('block') # None if the block was removed/is air
@@ -265,6 +304,9 @@ class Cortex:
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, env)
             elif data.get('type') == 'CHAT':
                 self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
+                self.chat_counter += 1
+                if self.chat_counter >= 3:
+                    self._check_interrupt(Priority.MEDIUM, "Multiple chat messages")
             elif data.get('type') == 'ERROR':
                 desc, msg = data.get('description'), data.get('message')
                 if desc:
@@ -272,7 +314,13 @@ class Cortex:
                         if f"Attempted: {desc}" in self.memory.episodic[i]:
                             self.memory.episodic[i] = self.memory.episodic[i].replace("Attempted:", "Failed:", 1)
                             break
+                self.error_counter += 1
+                if self.error_counter >= 3:
+                    self._check_interrupt(Priority.HIGH, "Frequent feedback errors")
+
                 self.memory.update_slot(MentalSlot.EPISODIC, f"Feedback Error: {msg}")
+            elif data.get('type') == 'ITEM_BREAK':
+                self._check_interrupt(Priority.HIGH, "Equipment broken")
             self.save_working_memory()
 
     """ --- Save/Load Working Memory --- """
@@ -374,6 +422,12 @@ class Cortex:
                 "plan": MentalSlot.PLAN
             }
             
+            # Update internal priority tracking based on LLM's assessment
+            priority_str = res_data.get("priority", "LOW").upper()
+            self.current_priority = Priority.__members__.get(priority_str, Priority.LOW)
+            self.chat_counter = 0
+            self.error_counter = 0
+
             for key, slot in cognition_map.items():
                 self.memory.update_slot(slot, res_data.get(key))
             
@@ -404,6 +458,7 @@ Key extensions and configurations include:
 - **Navigation**: `bot.pathfinder` is ready. Move using `await bot.pathfinder.goto(goal)`. Goals (e.g., `GoalNear`) and `Movements` are available at `bot.pathfinder.goals` and `bot.pathfinder.Movements`.
 - **Math**: `bot.vec3` library is attached for 3D vector utilities (e.g., `new bot.vec3(x, y, z)`).
 - **Feedback**: `bot.recordError(message)` reports script-level logical failures to your episodic memory.
+- **Interruption**: Your script is passed a `signal` object. Use `if (signal.aborted) return;` inside loops to check for interruptions.
 
 ### CODE GENERATION RULES:
 1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
@@ -425,9 +480,11 @@ As well as a behaviour script, your response includes your self-concept, strateg
 
 ### RESPONSE FORMAT:
 Respond only in valid JSON.
+Respond only in valid JSON. Use Priority levels: LOW, MEDIUM, HIGH, CRITICAL.
 {
   "behaviour_script": "Raw JavaScript code string. Use semicolons. No newlines (\\n). Use only the provided 'bot' instance.",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
+  "priority": "The Priority level of this script.",
   "reflection": "Highly open-minded novel stream of insight and reflection, or personal/interpersonal moments worth elaborating on.",
   "strategy": "Your high-level strategic vision.",
   "plan": "Your current step-by-step short-term roadmap (flexible and immediate).",

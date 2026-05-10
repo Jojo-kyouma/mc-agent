@@ -148,27 +148,9 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify(payload));
     };
 
-    const onEntityUpdate = (entity) => {
-        if (ws.readyState !== WebSocket.OPEN || !bot.entity || entity === bot.entity) return;
-        
-        const isGone = !bot.entities[entity.id];
-        if (!isGone && entity.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
-
-        const payload = { type: 'ENTITY_UPDATE', id: entity.id };
-        if (!isGone) {
-            payload.entity = {
-                id: entity.id,
-                name: getItemName(entity),
-                dist: Math.round(entity.position.distanceTo(bot.entity.position)),
-                position: entity.position
-            };
-        }
-        ws.send(JSON.stringify(payload));
-    };
-
+    /*
     bot.on('blockUpdate', onBlockUpdate);
-    bot.on('entitySpawn', onEntityUpdate);
-    bot.on('entityGone', onEntityUpdate);
+    */
 
     const sendStatus = () => {
         const status = {
@@ -255,8 +237,33 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'ENVIRONMENT', entities, blocks }));
     };
 
+    /* 
     bot.on('move', sendEnvironment);
     bot.on('spawn', sendEnvironment);
+    */
+
+    const onEntityUpdate = (entity) => {
+        if (ws.readyState !== WebSocket.OPEN || !bot.entity || entity === bot.entity) return;
+        
+        const isGone = !bot.entities[entity.id];
+        if (!isGone && entity.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
+
+        const payload = { type: 'ENTITY_UPDATE', id: entity.id };
+        if (!isGone) {
+            payload.entity = {
+                id: entity.id,
+                name: getItemName(entity),
+                dist: Math.round(entity.position.distanceTo(bot.entity.position)),
+                position: entity.position
+            };
+        }
+        ws.send(JSON.stringify(payload));
+    };
+
+    /*
+    bot.on('entitySpawn', onEntityUpdate);
+    bot.on('entityGone', onEntityUpdate);
+    */
 
     ws.on('close', () => {
         console.log("Cortex disconnected from WebSocket.");
