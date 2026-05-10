@@ -23,6 +23,7 @@ class MentalSlot(Enum):
     # Cognition. Using prompt-engineering we ask if these should be populated with new entries.
     SELF_CONCEPT = auto()  # Cognitive understanding of who the agent is
     STRATEGY = auto()      # High-level strategic objectives and vision
+    PLAN = auto()          # Flexible short-term planning
     REFLECTION = auto()    # Higher-level insights
 
     # Automatically updated.
@@ -41,16 +42,18 @@ class WorkingMemory:
     reflection: List[str] = field(default_factory=list)
     self_concept: List[str] = field(default_factory=list)
     strategy: List[str] = field(default_factory=list)
+    plan: List[str] = field(default_factory=list)
     recalled_memory: Optional[str] = None
     last_recall_query: Optional[str] = None
 
     # Optimized limits for different cognitive functions
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 25,      # Deeper conversation history
-        MentalSlot.EPISODIC: 40,    # Longer action history for context
-        MentalSlot.REFLECTION: 15,  # Recent insights
+        MentalSlot.SOCIAL: 10,      # Deeper conversation history
+        MentalSlot.EPISODIC: 7,     # Longer action history for context
+        MentalSlot.REFLECTION: 5,   # Insights
         MentalSlot.SELF_CONCEPT: 3, # Core identity/persona (stable)
-        MentalSlot.STRATEGY: 5      # Strategic vision (stable)
+        MentalSlot.STRATEGY: 3,     # Strategic vision (stable)
+        MentalSlot.PLAN: 3          # Flexible short-term plan
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
@@ -77,7 +80,8 @@ class WorkingMemory:
             MentalSlot.REFLECTION: "reflection",
             MentalSlot.SOCIAL: "social",
             MentalSlot.EPISODIC: "episodic",
-            MentalSlot.STRATEGY: "strategy"
+            MentalSlot.STRATEGY: "strategy",
+            MentalSlot.PLAN: "plan"
         }
 
         attr_name = attr_map.get(slot)
@@ -99,10 +103,11 @@ class WorkingMemory:
 
         mappings = [
             ("Strategy", self.strategy),
-            ("Persona & Self-Concept", self.self_concept),
-            ("Recent Reflections", self.reflection),
-            ("Recent Social Dialogue", self.social),
-            ("Activity Log (Actions & Error History)", self.episodic)
+            ("Short-Term Plan", self.plan),
+            ("Self-Concept", self.self_concept),
+            ("Reflections", self.reflection),
+            ("Social Dialogue", self.social),
+            ("Activity Log (Critical Feedback for Debugging behaviour scripts)", self.episodic)
         ]
 
         for header, items in mappings:
@@ -291,6 +296,7 @@ class Cortex:
                     self.memory.reflection = data.get("reflection", [])
                     self.memory.self_concept = data.get("self_concept", [])
                     self.memory.strategy = data.get("strategy", [])
+                    self.memory.plan = data.get("plan", [])
                     self.memory.recalled_memory = data.get("recalled_memory")
                     self.memory.last_recall_query = data.get("last_recall_query")
             except Exception as e:
@@ -363,7 +369,8 @@ class Cortex:
             cognition_map = {
                 "self_concept": MentalSlot.SELF_CONCEPT,
                 "reflection": MentalSlot.REFLECTION,
-                "strategy": MentalSlot.STRATEGY
+                "strategy": MentalSlot.STRATEGY,
+                "plan": MentalSlot.PLAN
             }
             
             for key, slot in cognition_map.items():
@@ -391,12 +398,11 @@ You are the consciousness of an ambitious and efficient autonomous Minecraft age
 2. **Iterative Problem Solving**: If a block or item name is uncertain (e.g., is it 'planks' or 'oak_planks'?), your script MUST programmatically check `bot.registry.itemsByName` or iterate over likely candidates. Exhaust all logic paths internally.
 
 ### CAPABILITIES (The 'bot' Object):
-The `bot` instance is your ONLY interface. It has been pre-configured with the following utilities:
-- **Navigation**: `bot.pathfinder` handles movement. Use `await bot.pathfinder.goto(goal)` to move. Goal types (e.g., `GoalNear`) are in `bot.pathfinder.goals`.
-- **Data**: `bot.registry` provides all game data (blocks, items, recipes).
-- **Math**: `bot.vec3` provides coordinate utilities (e.g., `new bot.vec3(x, y, z)`).
-- **Actions**: Direct methods like `bot.dig`, `bot.placeBlock`, `bot.equip`, `bot.craft`, and `bot.chat` are available.
-- **Perception**: `bot.findBlocks(options)` is a native function to locate blocks efficiently. It returns an array of `bot.vec3` positions. Example: `bot.findBlocks({ matching: b => ['oak_log'].includes(b.name), maxDistance: 32, count: 10 })`.
+The `bot` instance is a standard Mineflayer bot (v1.20.1). You have access to its full API (e.g., `bot.recipesFor`, `bot.inventory`, `bot.findBlocks`, `bot.chat`).
+Key extensions and configurations include:
+- **Navigation**: `bot.pathfinder` is ready. Move using `await bot.pathfinder.goto(goal)`. Goals (e.g., `GoalNear`) and `Movements` are available at `bot.pathfinder.goals` and `bot.pathfinder.Movements`.
+- **Math**: `bot.vec3` library is attached for 3D vector utilities (e.g., `new bot.vec3(x, y, z)`).
+- **Feedback**: `bot.recordError(message)` reports script-level logical failures to your episodic memory.
 
 ### CODE GENERATION RULES:
 1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
@@ -415,7 +421,7 @@ async function gather() { const logNames = ['oak_log', 'birch_log']; const targe
 - **Environment Feed**: Your working memory provides an automatic, low-cost snapshot of the immediate surroundings (2-block radius).
 
 ### COGNITIVE SNAPSHOT:
-As well as a behaviour script, your response includes your self-concept, strategic goal, reflection, and recall query.
+As well as a behaviour script, your response includes your self-concept, strategic goal, short-term plan, reflection, and recall query.
 
 ### RESPONSE FORMAT:
 Respond only in valid JSON.
@@ -424,6 +430,7 @@ Respond only in valid JSON.
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
   "reflection": "Highly open-minded novel stream of insight and reflection, or personal/interpersonal moments worth elaborating on.",
   "strategy": "Your high-level strategic vision.",
+  "plan": "Your current step-by-step short-term roadmap (flexible and immediate).",
   "self_concept": "Your core, stable identity and persona.",
   "recall_query": "A description to search your long-term memory for relevant past experiences."
 }
