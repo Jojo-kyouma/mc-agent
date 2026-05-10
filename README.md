@@ -2,6 +2,8 @@
 
 This project implements an autonomous Minecraft agent powered by Google Gemini. It uses a Node.js "bridge" to interface with the game via Mineflayer and a Python "cortex" for high-level reasoning, long-term memory, and cognitive processing.
 
+
+
 ## Prerequisites
 
 1.  **Minecraft Java Edition**: Version **1.20.1** is required.
@@ -39,3 +41,16 @@ uv sync
     python cortex.py
     ```
     The Python script will automatically spawn the Node.js bridge and begin the cognitive cycle.
+
+## Subjects touched upon
+
+### Functionalist Memory Systems
+In alignment with functionalist philosophy, this project treats consciousness and agency as products of informational processing rather than biological substrate. The architecture focuses on the management of two distinct memory layers:
+* **Volatile Working Memory:** Real-time environmental data acquisition and immediate spatial awareness (via `scanEnv`).
+* **Persistent Long-Term Memory:** State serialization (JSON-based) that ensures a continuous identity across sessions.
+* **Significance:** Most LLM implementations are "stateless." This project prototypes an agent that maintains a coherent narrative and state history, solving the problem of informational continuity in autonomous systems.
+
+### Embodied Agency in Simulated Environments
+This project serves as a low-cost testbed for **Embodied AI**. While traditional AI exists in a vacuum of text, this agent must navigate the "friction" of a physical world (gravity, collisions, and pathfinding limits).
+* **Reasoning-to-Action Translation:** The core challenge addressed is the middleware layer—converting high-level intent (e.g., "secure resources") into precise motor commands (e.g., vector-based movement and block manipulation).
+* **Robotics Prototyping:** By simulating the constraints of a humanoid body, the project develops logic for error recovery and adaptation that is directly applicable to real-world humanoid robotics and industrial automation.
