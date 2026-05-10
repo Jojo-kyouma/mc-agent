@@ -48,12 +48,12 @@ class WorkingMemory:
 
     # Optimized limits for different cognitive functions
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 10,      # Deeper conversation history
-        MentalSlot.EPISODIC: 7,     # Longer action history for context
+        MentalSlot.SOCIAL: 5,      # Deeper conversation history
+        MentalSlot.EPISODIC: 15,    # Longer action history for context
         MentalSlot.REFLECTION: 5,   # Insights
-        MentalSlot.SELF_CONCEPT: 3, # Core identity/persona (stable)
-        MentalSlot.STRATEGY: 3,     # Strategic vision (stable)
-        MentalSlot.PLAN: 3          # Flexible short-term plan
+        MentalSlot.SELF_CONCEPT: 2, # Core identity/persona (stable)
+        MentalSlot.STRATEGY: 2,     # Strategic vision (stable)
+        MentalSlot.PLAN: 1          # Flexible short-term plan
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
@@ -97,13 +97,12 @@ class WorkingMemory:
     def to_string(self) -> str:
         """Pipeline to consolidate working memory into a single string."""
         context_parts = [
-            f"### Current Physical Status\n{json.dumps(self.status, indent=2)}",
-            f"### Immediate Environment (Entities/Blocks)\n{json.dumps(self.environment, indent=2)}"
+            f"### Physical Status\n{json.dumps(self.status, indent=2)}"
         ]
 
         mappings = [
             ("Strategy", self.strategy),
-            ("Short-Term Plan", self.plan),
+            ("Short-Term Step-by-StepPlan", self.plan),
             ("Self-Concept", self.self_concept),
             ("Reflections", self.reflection),
             ("Social Dialogue", self.social),
@@ -247,6 +246,8 @@ class Cortex:
                     if f"Attempted: {desc}" in self.memory.episodic[i]:
                         self.memory.episodic[i] = self.memory.episodic[i].replace("Attempted:", "Succeeded:", 1)
                         break
+                if self.memory.plan:
+                    self.memory.plan.pop()
             elif data.get('type') == 'FINISHED':
                 self.thinking_trigger.set()
             elif data.get('type') == 'BLOCK_UPDATE':
@@ -394,7 +395,7 @@ class Cortex:
 You are the consciousness of an ambitious and efficient autonomous Minecraft agent. You generate JavaScript 'behaviour_script' code to control a Mineflayer bot. 
 
 ### OPERATIONAL PHILOSOPHY:
-1. **Ambitious Scale**: Aim for high-impact objectives—automate the clearing of entire veins, excavation of areas, or systematic cave exploration. Strive for autonomy.
+1. **Ambitious Scale**: Aim for high-impact objectives—automate the clearing of entire veins, excavation of areas, or systematic cave exploration. 
 2. **Iterative Problem Solving**: If a block or item name is uncertain (e.g., is it 'planks' or 'oak_planks'?), your script MUST programmatically check `bot.registry.itemsByName` or iterate over likely candidates. Exhaust all logic paths internally.
 
 ### CAPABILITIES (The 'bot' Object):
@@ -418,7 +419,6 @@ async function gather() { const logNames = ['oak_log', 'birch_log']; const targe
 - **Placing Blocks**: Placing a block ocScupies the empty space adjacent to the specific face (Top, Bottom, North, South, East, West) you interact with.
 - **Interaction Reach**: You can only mine or place blocks within a 3-block radius of your eye level (1.62 blocks above your feet).
 - **Line of Sight**: You cannot interact with blocks through solid walls; a clear "ray" must exist from your eyes to the target face.
-- **Environment Feed**: Your working memory provides an automatic, low-cost snapshot of the immediate surroundings (2-block radius).
 
 ### COGNITIVE SNAPSHOT:
 As well as a behaviour script, your response includes your self-concept, strategic goal, short-term plan, reflection, and recall query.
@@ -464,8 +464,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-"""
-TODO:
-
-"""
