@@ -57,10 +57,10 @@ bot.once('inject_allowed', () => {
                     bot.removeListener('path_update', onPathUpdate);
                     bot.removeListener('path_stop', onPathStop);
 
-                    bot.pathfinder.setGoal(null);
-                    bot.clearControlStates();  
+                    bot.clearControlStates();
 
                     if (error) {
+                        bot.pathfinder.setGoal(null);
                         reject(new Error(error));
                     } else {
                         resolve();
@@ -68,10 +68,8 @@ bot.once('inject_allowed', () => {
                 };
 
                 const onGoalReached = () => cleanup();
-                const onPathStop = () => cleanup('Pathfinding was interrupted externally.');
-                const onPathUpdate = (res) => { 
-                    if (res.status === 'noPath') cleanup('No path found to target.'); 
-                };
+                const onPathStop = () => cleanup('Pathfinding stopped.');
+                const onPathUpdate = (res) => { if (res.status === 'noPath') cleanup('No path.'); };
 
                 bot.on('goal_reached', onGoalReached);
                 bot.on('path_update', onPathUpdate);
@@ -154,7 +152,6 @@ wss.on('connection', (ws) => {
                     console.error(`[Script Error]: ${scriptErr}`);
                     ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message, description: data.description }));
                 } finally {
-                    isExecuting = false;
                     ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
                 }
             }
