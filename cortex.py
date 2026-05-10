@@ -394,22 +394,7 @@ The `bot` instance is your ONLY interface. It has been pre-configured with the f
 4. **No External Imports**: Use only the properties of `bot` and `bot.vec3`. Do not use `require`.
 
 ### EXAMPLE PROCEDURAL SCRIPT:
-const logsToFind = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log'];
-const data = await bot.scanEnv(64, 'surface');
-const targets = data.blocks.filter(b => logsToFind.includes(b.name));
-
-if (targets.length === 0) { 
-    bot.chat('No trees detected in 64-block surface scan.');
-} else {
-    bot.chat(`Systematic harvest of ${targets.length} log blocks initiated.`);
-    for (const target of targets) {
-        const block = bot.blockAt(target.pos);
-        if (!block || ['air', 'cave_air', 'void_air'].includes(block.name)) continue;
-        await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(target.pos.x, target.pos.y, target.pos.z, 2));
-        try { await bot.dig(block); } catch (err) { continue; }
-    }
-    bot.chat('Large scale logging operation complete.');
-}
+const logsToFind = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log'];const data = await bot.scanEnv(64, 'surface');const targets = data.blocks.filter(b => logsToFind.includes(b.name));if (targets.length === 0) { bot.chat('No trees detected in 64-block surface scan.');} else {bot.chat(`Systematic harvest of ${targets.length} log blocks initiated.`);for (const target of targets) {const block = bot.blockAt(target.pos);if (!block || ['air', 'cave_air', 'void_air'].includes(block.name)) continue;await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(target.pos.x, target.pos.y, target.pos.z, 2));try { await bot.dig(block); } catch (err) { continue; }}bot.chat('Large scale logging operation complete.');}
 
 ### Minecraft-Specific Constraints:
 - **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing.
@@ -424,7 +409,7 @@ Your response includes your current self-concept, strategic goals, and reflectio
 ### RESPONSE FORMAT:
 Respond only in valid JSON.
 {
-  "behaviour_script": "Valid, raw JavaScript without formatting.",
+  "behaviour_script": "...",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
   "reflection": "Highly open-minded novel stream of insight and reflection.",
   "strategy": "Your high-level strategic vision.",
@@ -443,7 +428,7 @@ async def main():
     asyncio.create_task(nexus.listen_to_senses())
 
     # Initial trigger to start the thinking cycle
-    # Add an initial 10-second delay before the first request to Gemini
+    # Add an initial 30-second delay before the first request to Gemini
     nexus.thinking_trigger.set()
     await asyncio.sleep(30) 
 
@@ -456,7 +441,7 @@ async def main():
             pass
         
         nexus.thinking_trigger.clear()
-        # Add an additional 5-second delay before requesting a new thought from Gemini
+        # Add an additional 30-second delay before requesting a new thought from Gemini
         await asyncio.sleep(30)
         action, raw_json, prompt = await nexus.think()
         
@@ -470,3 +455,10 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+"""
+TODO:
+- Control when episodes are saved to memory, and when errors occur, the description of the action is not saved.
+- As the above, figure out how to make error handling behaviour_scripts more robust and clean.
+- Remove memory.db from git tracking
+"""
