@@ -54,10 +54,10 @@ class WorkingMemory:
 
     # Optimized limits for different cognitive functions
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 5,       # Deeper conversation history
+        MentalSlot.SOCIAL: 10,       # Deeper conversation history
         MentalSlot.EPISODIC: 15,    # Longer action history for context
         MentalSlot.SCRIPT_UNDERSTANDING: 10,
-        MentalSlot.PERSONAL_INTERPERSONAL: 10,
+        MentalSlot.PERSONAL_INTERPERSONAL: 7,
         MentalSlot.SELF_CONCEPT: 2, # Core identity/persona (stable)
         MentalSlot.STRATEGY: 2,     # Strategic vision (stable)
         MentalSlot.PLAN: 1          # Flexible short-term plan
@@ -165,6 +165,9 @@ class Cortex:
         
         self.base_dir = os.path.join("agents", agent_name)
         os.makedirs(self.base_dir, exist_ok=True)
+        
+        self.log_dir = "log"
+        os.makedirs(self.log_dir, exist_ok=True)
         
         self.wm_path = os.path.join(self.base_dir, "working_memory.json")
         self.db_path = os.path.join(self.base_dir, "memory.db")
@@ -493,7 +496,7 @@ You are the consciousness of an ambitious and efficient autonomous Minecraft age
 A working memory snapshot is provided to you in each prompt.
 
 ### SCRIPTING GUIDELINES:
-1. **Ambitious Scale**: Aim for higher-impact objectives—automate the clearing of entire veins, excavation of areas, or systematic cave exploration. 
+1. **Ambitious Scale**: Aim for higher-impact objectives—automate the clearing of veins, excavation of areas, or systematic cave exploration. 
 2. **Heuristic Data Acquisition**: When encountering script failures, execute diagnostic scripts to gather relevant data.
 
 ### CAPABILITIES (The 'bot' Object):
@@ -530,7 +533,7 @@ Respond only in valid JSON.
   "behaviour_script": "Raw JavaScript code string. Use semicolons. No newlines (\\n). Use only the provided 'bot' instance.",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
   "script_understanding": "Key insights about Mineflayer bot capabilities, reach, or API constraints discovered.",
-  "personal_interpersonal": "Interactions with users or specific landmarks and memories worth saving.",
+  "personal_interpersonal": "Interactions with users or specific landmarks and memories worth saving. Treat this as a stable holder. Frequently write None to keep it unchanged.",
   "strategy": "Your high-level strategic vision.",
   "plan": "Your current step-by-step short-term roadmap (flexible and immediate).",
   "self_concept": "Your core, stable identity and persona.",
@@ -572,7 +575,8 @@ Respond only in valid JSON.
             action, raw_json, prompt = await self.think()
             
             if prompt:
-                with open(f"llm_debug_{self.agent_name}.txt", "a", encoding="utf-8") as f:
+                log_path = os.path.join(self.log_dir, f"{self.agent_name}.txt")
+                with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"\n--- {datetime.now()} ---\n[INPUT]\n{prompt}\n\n[OUTPUT]\n{raw_json or 'Error'}\n")
 
             if action:
@@ -581,10 +585,20 @@ Respond only in valid JSON.
 
 # --- Multi-Agent Usage ---
 async def main():
-    num_agents = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    args = sys.argv[1:]
+    agent_names = []
+
+    if not args:
+        agent_names = ["Agent1"]
+    elif len(args) == 1 and args[0].isdigit():
+        num_agents = int(args[0])
+        agent_names = [f"Agent{i+1}" for i in range(num_agents)]
+    else:
+        agent_names = args
+
     agents = []
-    for i in range(num_agents):
-        agents.append(Cortex(agent_name=f"Agent{i+1}", ws_port=8080 + i))
+    for i, name in enumerate(agent_names):
+        agents.append(Cortex(agent_name=name, ws_port=8080 + i))
     
     await asyncio.gather(*(agent.run() for agent in agents))
 

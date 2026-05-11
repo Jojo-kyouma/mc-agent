@@ -54,8 +54,9 @@ build/
 *.egg-info/
 
 # --- Misc ---
+agents/
+log/
+
+# Lead developer's personal files
 deprecated/
-llm_debug.txt
-working_memory.json
-memory.db
-future_work.txt
+ideas.txt
