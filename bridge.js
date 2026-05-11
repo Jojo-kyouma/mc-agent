@@ -4,7 +4,7 @@ const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 62396; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 52165; // Change this to the port shown when you "Open to LAN"
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
 const WS_PORT = parseInt(process.argv[2]) || 8080;
