@@ -4,7 +4,7 @@ const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 51071; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 60802; // Change this to the port shown when you "Open to LAN"
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
 const WS_PORT = parseInt(process.argv[2]) || 8080;
@@ -37,8 +37,8 @@ const getItemName = (entity) => {
 bot.once('inject_allowed', () => {
     if (bot.pathfinder) {
         const defaultMovements = new Movements(bot);
-        defaultMovements.allowDig = true;
-        defaultMovements.allow1by1towers = true;
+        defaultMovements.allowDig = false;
+        defaultMovements.allow1by1towers = false;
         defaultMovements.allowSprinting = false; // Mimic regular human walking
         defaultMovements.scafoldingBlocks = [];
         bot.pathfinder.setMovements(defaultMovements);
@@ -60,6 +60,9 @@ bot.once('inject_allowed', () => {
                     bot.removeListener('goal_reached', onGoalReached);
                     bot.removeListener('path_update', onPathUpdate);
                     bot.removeListener('path_stop', onPathStop);
+                    bot.removeListener('death', onDeath);
+                    bot.removeListener('kicked', onKicked);
+                    bot.removeListener('end', onEnd);
 
                     bot.clearControlStates();
 
@@ -79,9 +82,16 @@ bot.once('inject_allowed', () => {
                     else if (res.status === 'stuck') cleanup('Bot is stuck while pathfinding.');
                 };
 
+                const onDeath = () => cleanup('Bot died while pathfinding.');
+                const onKicked = (reason) => cleanup(`Bot was kicked: ${reason}`);
+                const onEnd = () => cleanup('Bot disconnected.');
+
                 bot.on('goal_reached', onGoalReached);
                 bot.on('path_update', onPathUpdate);
                 bot.on('path_stop', onPathStop);
+                bot.on('death', onDeath);
+                bot.on('kicked', onKicked);
+                bot.on('end', onEnd);
 
                 bot.pathfinder.setGoal(goal);
             });
