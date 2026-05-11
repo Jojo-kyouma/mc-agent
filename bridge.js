@@ -4,7 +4,7 @@ const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 60802; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 51163; // Change this to the port shown when you "Open to LAN"
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
 const WS_PORT = parseInt(process.argv[2]) || 8080;
@@ -41,6 +41,7 @@ bot.once('inject_allowed', () => {
         defaultMovements.allow1by1towers = false;
         defaultMovements.allowSprinting = false; // Mimic regular human walking
         defaultMovements.scafoldingBlocks = [];
+        defaultMovements.searchTimeout = 10000; // Force pathfinder to give up search after 10s
         bot.pathfinder.setMovements(defaultMovements);
 
         bot.pathfinder.goals = goals;
@@ -53,7 +54,13 @@ bot.once('inject_allowed', () => {
             return new Promise((resolve, reject) => {
                 let completed = false;
 
+                // Safety timeout: Rejects if pathfinding takes longer than 45 seconds total
+                const timeoutId = setTimeout(() => {
+                    cleanup('Pathfinding timed out (wrapper safety).');
+                }, 45000);
+
                 const cleanup = (error = null) => {
+                    clearTimeout(timeoutId);
                     if (completed) return;
                     completed = true;
 
