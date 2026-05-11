@@ -108,10 +108,6 @@ class WorkingMemory:
             f"### Physical Status/Inventory\n{json.dumps(self.status, indent=2)}"
         ]
 
-        if self.environment:
-            env_display = {k: v for k, v in self.environment.items() if k != 'type'}
-            context_parts.append(f"### Immediate Surrounding\n{json.dumps(env_display, indent=2)}")
-
         mappings = [
             ("Strategy", self.strategy),
             ("Short-Term Step-by-StepPlan", self.plan),
@@ -507,12 +503,15 @@ A working memory snapshot is provided to you in each prompt.
 
 ### CAPABILITIES (The 'bot' Object):
 The `bot` instance is a standard Mineflayer bot (v1.20.1). You have access to its full API (e.g., `bot.recipesFor`, `bot.inventory`, `bot.findBlocks`, `bot.chat`).
-Key extensions, crafting logic, and configurations include:
+Key extensions and critical API "laws":
 - **Navigation**: `bot.pathfinder` is ready. Move using `await bot.pathfinder.goto(goal)`. Goals (e.g., `GoalNear`) and `Movements` are available at `bot.pathfinder.goals` and `bot.pathfinder.Movements`.
 - **Math**: `bot.vec3` library is attached for 3D vector utilities (e.g., `new bot.vec3(x, y, z)`).
 - **Feedback**: `bot.recordError(message)` reports script-level logical failures to your episodic memory.
-- **Crafting**: To craft items requiring a 3x3 grid (tools, armor, etc.), you MUST find or place a `crafting_table` block first. Use `bot.findBlock({ matching: bot.registry.blocksByName.crafting_table.id, maxDistance: 5 })`. You MUST pass this block object as the 4th argument to `bot.recipesFor` and the 3rd argument to `bot.craft`.
-- **Registry**: Always use `bot.registry.itemsByName['item_name']` or `bot.registry.blocksByName['block_name']`. Check if the resulting object exists before accessing `.id`.
+- **2x2 vs 3x3 Crafting**: 2x2 recipes (planks, sticks, crafting table) use `bot.recipesFor(id, null, 1, null)`. 3x3 recipes (tools, furnace) REQUIRE a workbench block: `bot.recipesFor(id, null, 1, workbenchBlock)`.
+- **Placement**: Use `bot.placeBlock(referenceBlock, faceVector)`. To place on the ground: `const ref = bot.blockAt(bot.entity.position.offset(1, -1, 0)); await bot.placeBlock(ref, new bot.vec3(0, 1, 0));`. Ensure you are not standing on the target spot.
+- **Registry**: Always use `bot.registry.itemsByName['item_name']`. Never assume a wood type; check inventory for any `_log` first.
+- **Verification**: After `placeBlock`, use `bot.findBlock` to verify the block exists. After `craft`, check `bot.inventory`. If verification fails, you MUST `throw new Error('Verification failed')`.
+- **Proactive Discovery**: You do not have a constant visual feed. You MUST use `bot.findBlocks({ matching: ..., maxDistance: 32 })` or `bot.findBlock(...)` at the start of your scripts to identify targets in the world.
 
 ### CODE GENERATION RULES:
 1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
@@ -520,11 +519,11 @@ Key extensions, crafting logic, and configurations include:
 3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
 4. **Robustness & Error Handling**: Wrap interactions and logic in `try-catch` blocks and call `bot.recordError(message)` within the `catch` block. You MUST be very generous with `try-catch` blocks. If a step is believed to be critical for the rest of the script then `throw` the error to stop execution.
 5. **Loop Robustness**: When iterating over multiple targets (like logs or ores), wrap the logic INSIDE the loop in a `try-catch`. This ensures that if one target is unreachable, the script can continue to the next one instead of failing entirely.
-6. **Verification**: After crafting or digging, verify the item is in `bot.inventory.items()` before attempting to `equip` or use it. Never assume an action succeeded without checking state.
+6. **Verification Required**: You must physically verify changes to the world or inventory. Never assume an action succeeded just because the function call returned.
 7. **Interruption**: Your script is passed a `signal` object. You should check `if (signal.aborted) return;` frequently to halt execution immediately if a higher priority task arises.
 
 ### EXAMPLE SCRIPT:
-async function craftAndEquip() { try { const itemData = bot.registry.itemsByName['wooden_pickaxe']; if (!itemData) return; const recipe = bot.recipesFor(itemData.id, null, 1, null)[0]; if (!recipe) { bot.chat('Missing ingredients for pickaxe'); return; } await bot.craft(recipe, 1, null); await bot.waitForTicks(5); const tool = bot.inventory.items().find(i => i.name === 'wooden_pickaxe'); if (tool) await bot.equip(tool, 'hand'); } catch (e) { bot.recordError('Crafting failed: ' + e.message); } } await craftAndEquip();
+async function secureWorkbench() { try { let table = bot.findBlock({ matching: bot.registry.blocksByName.crafting_table.id, maxDistance: 8 }); if (table) return; const tableItem = bot.inventory.items().find(i => i.name === 'crafting_table'); if (!tableItem) throw new Error('No crafting table in inventory'); const referenceBlock = bot.blockAt(bot.entity.position.offset(1, -1, 0)); await bot.equip(tableItem, 'hand'); await bot.placeBlock(referenceBlock, new bot.vec3(0, 1, 0)); await bot.waitForTicks(10); table = bot.findBlock({ matching: bot.registry.blocksByName.crafting_table.id, maxDistance: 4 }); if (!table) throw new Error('Table verification failed: Block not found after placement'); bot.chat('Workbench placed and verified.'); } catch (e) { bot.recordError('Failed to secure workbench: ' + e.message); throw e; } } await secureWorkbench();
 
 ### Minecraft-Specific Constraints:
 - **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing. If block-placement fails, you might be standing in the way.
@@ -535,8 +534,9 @@ async function craftAndEquip() { try { const itemData = bot.registry.itemsByName
 ### STARTING AS A NEW AGENT:
 If you are starting as a new agent with a clean working memory snapshot, you should follow these initial steps to establish a strong foundation.
 1. Find trees and gather wood logs by mining them. 4-5 trees should be sufficient to start.
-2. Convert logs to planks and sticks (2x2 crafting). Craft a Crafting Table. Place the table on the ground nearby. To place: find the block below your feet using `bot.blockAt(bot.entity.position.offset(0, -1, 0))` and place against its Top face.
-3. Once the table is placed, use `bot.findBlock` to get the table block. Use that block object in `recipesFor` and `craft` to create a Wooden Pickaxe.
+2. Convert logs to planks and sticks (2x2). Craft a Crafting Table. Verify its presence in inventory.
+3. Place the table on the ground (offset from your body). Use `bot.findBlock` to confirm it is physically in the world.
+4. Use the verified workbench block to craft a Wooden Pickaxe (3x3). Verify the pickaxe in inventory.
 4. Equip the pickaxe and descend to stone layers diagonally. Mine cobblestone until the wooden pickaxe breaks. Return to the crafting table to upgrade to Stone Tools. Construct a Furnace.
 5. Locate and mine Coal Ore and Iron Ore. Return to the furnace to smelt the ore into iron ingots to craft an Iron Pickaxe.
 6. Now you will undertake a larger task of clearing a forest. We will need alot of wood for the next step.

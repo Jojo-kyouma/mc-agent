@@ -257,7 +257,8 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify(payload));
     };
 
-    bot.on('blockUpdate', onBlockUpdate);
+    // Environment logic is currently inactivated to reduce cognitive noise in Working Memory.
+    // bot.on('blockUpdate', onBlockUpdate);
 
     const sendEnvironment = (radius, force = false) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
@@ -314,13 +315,13 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'ENVIRONMENT', entities, blocks }));
     };
 
-    bot.on('move', sendEnvironment);
-    bot.on('spawn', sendEnvironment);
+    // bot.on('move', sendEnvironment);
+    // bot.on('spawn', sendEnvironment);
 
     // If the bot is already spawned when the cortex connects, send initial data immediately
     if (bot.entity) {
         sendStatus();
-        sendEnvironment(ENVIRONMENT_RADIUS, true); // This radius might be too small for initial spatial awareness
+        // sendEnvironment(ENVIRONMENT_RADIUS, true);
     }
 
     const onEntityUpdate = (entity) => {
