@@ -28,8 +28,7 @@ class MentalSlot(Enum):
     SELF_CONCEPT = auto()  # Cognitive understanding of who the agent is
     STRATEGY = auto()      # High-level strategic objectives and vision
     PLAN = auto()          # Flexible short-term planning
-    SCRIPT_UNDERSTANDING = auto() # Knowledge about bot capabilities
-    PERSONAL_INTERPERSONAL = auto() # Personal memories and social facts
+    INTERPERSONAL = auto() # Personal memories and social facts
 
     # Automatically updated.
     STATUS = auto()        # Current health, hunger, inventory, and minecraft-specific player-status information
@@ -39,34 +38,27 @@ class MentalSlot(Enum):
 
 @dataclass
 class WorkingMemory:
-    """Maintains the working memory of the agent. As list grows, older items are removed."""
+    """Maintains the working memory of the agent."""
     status: Dict[str, Any] = field(default_factory=dict)
     environment: Dict[str, Any] = field(default_factory=dict)
     social: List[str] = field(default_factory=list)
     episodic: List[str] = field(default_factory=list)
-    script_understanding: List[str] = field(default_factory=list)
-    personal_interpersonal: List[str] = field(default_factory=list)
-    self_concept: List[str] = field(default_factory=list)
-    strategy: List[str] = field(default_factory=list)
-    plan: List[str] = field(default_factory=list)
+    interpersonal: str = ""
+    self_concept: str = ""
+    strategy: str = ""
+    plan: str = ""
     recalled_memories: List[str] = field(default_factory=list)
     last_recall_query: Optional[str] = None
 
     # Optimized limits for different cognitive functions
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 10,       # Deeper conversation history
+        MentalSlot.SOCIAL: 10,      # Deeper conversation history
         MentalSlot.EPISODIC: 15,    # Longer action history for context
-        MentalSlot.SCRIPT_UNDERSTANDING: 10,
-        MentalSlot.PERSONAL_INTERPERSONAL: 7,
-        MentalSlot.SELF_CONCEPT: 2, # Core identity/persona (stable)
-        MentalSlot.STRATEGY: 2,     # Strategic vision (stable)
-        MentalSlot.PLAN: 1          # Flexible short-term plan
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
-        """Appends new data to a slot and enforces the sliding window size."""
-        if data is None or data == "":
-            return
+        """Updates memory slots. Handles overwriting single-value slots."""
+        if data is None or data == "": return
 
         # Status and Environment are overwriting snapshots
         if slot == MentalSlot.STATUS:
@@ -76,27 +68,30 @@ class WorkingMemory:
             self.environment = data
             return
         
-        # Avoid duplicates within stable cognition slots
+        val_str = str(data)
+
+        # Handle single-value cognition slots
         if slot == MentalSlot.SELF_CONCEPT:
-            if self.self_concept and self.self_concept[-1] == data: return
-        elif slot == MentalSlot.STRATEGY:
-            if self.strategy and self.strategy[-1] == data: return
+            self.self_concept = val_str
+            return
+        if slot == MentalSlot.STRATEGY:
+            self.strategy = val_str
+            return
+        if slot == MentalSlot.PLAN:
+            self.plan = val_str
+            return
+        if slot == MentalSlot.INTERPERSONAL:
+            self.interpersonal = val_str
+            return
 
         attr_map = {
-            MentalSlot.SELF_CONCEPT: "self_concept",
-            MentalSlot.SCRIPT_UNDERSTANDING: "script_understanding",
-            MentalSlot.PERSONAL_INTERPERSONAL: "personal_interpersonal",
             MentalSlot.SOCIAL: "social",
             MentalSlot.EPISODIC: "episodic",
-            MentalSlot.STRATEGY: "strategy",
-            MentalSlot.PLAN: "plan"
         }
 
         attr_name = attr_map.get(slot)
         if attr_name:
             target_list = getattr(self, attr_name)
-            val_str = str(data)
-
             target_list.append(val_str)
             limit = self.SLOT_LIMITS.get(slot, 20)
             if len(target_list) > limit:
@@ -108,12 +103,12 @@ class WorkingMemory:
             f"### Physical Status/Inventory\n{json.dumps(self.status, indent=2)}"
         ]
 
+        if self.strategy: context_parts.append(f"### Strategy: {self.strategy}")
+        if self.plan: context_parts.append(f"### Short-Term Plan: {self.plan}")
+        if self.self_concept: context_parts.append(f"### Self-Concept: {self.self_concept}")
+        if self.interpersonal: context_parts.append(f"### Interpersonal Facts: {self.interpersonal}")
+
         mappings = [
-            ("Strategy", self.strategy),
-            ("Short-Term Step-by-StepPlan", self.plan),
-            ("Self-Concept", self.self_concept),
-            ("'bot' Object & Script Understanding", self.script_understanding),
-            ("Personal/Interpersonal", self.personal_interpersonal),
             ("Social Dialogue", self.social),
             ("Activity Log (Critical Feedback for Debugging behaviour scripts)", self.episodic)
         ]
@@ -365,11 +360,10 @@ class Cortex:
                     self.memory.environment = data.get("environment", {})
                     self.memory.social = data.get("social", [])
                     self.memory.episodic = data.get("episodic", [])
-                    self.memory.script_understanding = data.get("script_understanding", [])
-                    self.memory.personal_interpersonal = data.get("personal_interpersonal", [])
-                    self.memory.self_concept = data.get("self_concept", [])
-                    self.memory.strategy = data.get("strategy", [])
-                    self.memory.plan = data.get("plan", [])
+                    self.memory.interpersonal = data.get("interpersonal", "")
+                    self.memory.self_concept = data.get("self_concept", "")
+                    self.memory.strategy = data.get("strategy", "")
+                    self.memory.plan = data.get("plan", "")
                     self.memory.recalled_memories = data.get("recalled_memories", [])
                     self.memory.last_recall_query = data.get("last_recall_query")
                 print(f"[*] Loaded working memory for {self.agent_name}")
@@ -402,27 +396,23 @@ class Cortex:
 
     def save_to_memory(self):
         """Save an entry to the long-term memory."""
-        # Save script understanding and personal/interpersonal if they are unique
-        targets = []
-        if self.memory.script_understanding: targets.append(self.memory.script_understanding[-1])
-        if self.memory.personal_interpersonal: targets.append(self.memory.personal_interpersonal[-1])
-
-        for content in targets:
-            if self._is_duplicate(content):
-                continue
+        # Save unique interpersonal landmarks or facts
+        content = self.memory.interpersonal
+        if not content or self._is_duplicate(content):
+            return
             
-            record = Record(
-                content=content,
-                embedding_description=content,
-                embedding=self.embedding_model.encode(content).tolist()
+        record = Record(
+            content=content,
+            embedding_description=content,
+            embedding=self.embedding_model.encode(content).tolist()
+        )
+            
+        embedding_blob = json.dumps(record.embedding).encode('utf-8')
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO long_term_memory (id, content, embedding_description, embedding, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (record.id, record.content, record.embedding_description, embedding_blob, record.timestamp.isoformat())
             )
-            
-            embedding_blob = json.dumps(record.embedding).encode('utf-8')
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "INSERT INTO long_term_memory (id, content, embedding_description, embedding, timestamp) VALUES (?, ?, ?, ?, ?)",
-                    (record.id, record.content, record.embedding_description, embedding_blob, record.timestamp.isoformat())
-                )
 
     async def recall(self, query: str, threshold: float = 0.4) -> List[str]:
         """Finds the top K most relevant memories based on a query string."""
@@ -456,108 +446,82 @@ class Cortex:
 
         context = self.memory.to_string()
         prompt = self._build_brain_prompt(context)
-        try:
-            response = self.client.models.generate_content(
-                model=LLM_MODEL_ID,
-                contents=prompt,
-                config={'response_mime_type': 'application/json'}
-            )
-            raw_json = response.text
-            res_data = json.loads(raw_json)
-            
-            # Map response keys directly to memory slots
-            cognition_map = {
-                "self_concept": MentalSlot.SELF_CONCEPT,
-                "script_understanding": MentalSlot.SCRIPT_UNDERSTANDING,
-                "personal_interpersonal": MentalSlot.PERSONAL_INTERPERSONAL,
-                "strategy": MentalSlot.STRATEGY,
-                "plan": MentalSlot.PLAN
-            }
-            
-            for key, slot in cognition_map.items():
-                self.memory.update_slot(slot, res_data.get(key))
-            
-            self.memory.last_recall_query = res_data.get("recall_query")
-            
-            script = res_data.get("behaviour_script")
-            description = res_data.get("behaviour_description")
-            if script:
-                return (MinecraftAction(
-                    description=description,
-                    content=script
-                ), raw_json, prompt)
-        except Exception as e:
-            print(f"Brain reasoning error: {e}")
+
+        max_retries = 3
+        retry_delay = 5  # Initial wait time in seconds
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=LLM_MODEL_ID,
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                raw_json = response.text
+                res_data = json.loads(raw_json)
+                
+                # Map response keys directly to memory slots
+                cognition_map = {
+                    "self_concept": MentalSlot.SELF_CONCEPT,
+                    "interpersonal": MentalSlot.INTERPERSONAL,
+                    "strategy": MentalSlot.STRATEGY,
+                    "plan": MentalSlot.PLAN
+                }
+                
+                for key, slot in cognition_map.items():
+                    self.memory.update_slot(slot, res_data.get(key))
+                
+                self.memory.last_recall_query = res_data.get("recall_query")
+                
+                script = res_data.get("behaviour_script")
+                description = res_data.get("behaviour_description")
+                if script:
+                    return (MinecraftAction(description=description, content=script), raw_json, prompt)
+                break # Exit loop if processing is complete
+            except Exception as e:
+                err_str = str(e)
+                # Detect 503 or overload errors specifically
+                if "503" in err_str or "overloaded" in err_str.lower():
+                    if attempt < max_retries - 1:
+                        print(f"[*] Gemini is under high demand (503). Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                
+                print(f"Brain reasoning error: {e}")
+                break
+
         return None, None, prompt
 
     def _build_brain_prompt(self, context: str):
         system_instr = """
-You are the consciousness of an ambitious and efficient autonomous Minecraft agent. You generate JavaScript 'behaviour_script' code to control a Mineflayer bot.
-A working memory snapshot is provided to you in each prompt.
-
-### SCRIPTING GUIDELINES:
-1. **Ambitious Scale**: Aim for higher-impact objectives—automate the clearing of veins, excavation of areas, or systematic cave exploration. 
-2. **Efficiency**: Always prefer solutions that achieve more with fewer steps. For example, find a cave instead of digging straight down, or gather nearby resources while navigating to a target.
-3. **Heuristic Data Acquisition**: When encountering script failures, execute diagnostic scripts to gather relevant data.
-4. **World Awareness**: It can be useful to properly read the 'Status/Inventory' and 'Immediate Surrounding' information provided by the working memory before writing the script, to ensure prerequisites for actions are met.
-
-### CAPABILITIES (The 'bot' Object):
-The `bot` instance is a standard Mineflayer bot (v1.20.1). You have access to its full API (e.g., `bot.recipesFor`, `bot.inventory`, `bot.findBlocks`, `bot.chat`).
-Key extensions and critical API "laws":
-- **Navigation**: `bot.pathfinder` is ready. Move using `await bot.pathfinder.goto(goal)`. Goals (e.g., `GoalNear`) and `Movements` are available at `bot.pathfinder.goals` and `bot.pathfinder.Movements`.
-- **Math**: `bot.vec3` library is attached for 3D vector utilities (e.g., `new bot.vec3(x, y, z)`).
-- **Feedback**: `bot.recordError(message)` reports script-level logical failures to your episodic memory.
-- **2x2 vs 3x3 Crafting**: 2x2 recipes (planks, sticks, crafting table) use `bot.recipesFor(id, null, 1, null)`. 3x3 recipes (tools, furnace) REQUIRE a workbench block: `bot.recipesFor(id, null, 1, workbenchBlock)`.
-- **Placement**: Use `bot.placeBlock(referenceBlock, faceVector)`. To place on the ground: `const ref = bot.blockAt(bot.entity.position.offset(1, -1, 0)); await bot.placeBlock(ref, new bot.vec3(0, 1, 0));`. Ensure you are not standing on the target spot.
-- **Registry**: Always use `bot.registry.itemsByName['item_name']`. Never assume a wood type; check inventory for any `_log` first.
-- **Verification**: After `placeBlock`, use `bot.findBlock` to verify the block exists. After `craft`, check `bot.inventory`. If verification fails, you MUST `throw new Error('Verification failed')`.
-- **Proactive Discovery**: You do not have a constant visual feed. You MUST use `bot.findBlocks({ matching: ..., maxDistance: 32 })` or `bot.findBlock(...)` at the start of your scripts to identify targets in the world.
-
-### CODE GENERATION RULES:
-1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
-2. **No External Imports**: Use only the properties of `bot`. Do not use `require`.
-3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
-4. **Robustness & Error Handling**: Wrap interactions and logic in `try-catch` blocks and call `bot.recordError(message)` within the `catch` block. You MUST be very generous with `try-catch` blocks. If a step is believed to be critical for the rest of the script then `throw` the error to stop execution.
-5. **Loop Robustness**: When iterating over multiple targets (like logs or ores), wrap the logic INSIDE the loop in a `try-catch`. This ensures that if one target is unreachable, the script can continue to the next one instead of failing entirely.
-6. **Verification Required**: You must physically verify changes to the world or inventory. Never assume an action succeeded just because the function call returned.
-7. **Interruption**: Your script is passed a `signal` object. You should check `if (signal.aborted) return;` frequently to halt execution immediately if a higher priority task arises.
-
-### EXAMPLE SCRIPT:
-async function secureWorkbench() { try { let table = bot.findBlock({ matching: bot.registry.blocksByName.crafting_table.id, maxDistance: 8 }); if (table) return; const tableItem = bot.inventory.items().find(i => i.name === 'crafting_table'); if (!tableItem) throw new Error('No crafting table in inventory'); const referenceBlock = bot.blockAt(bot.entity.position.offset(1, -1, 0)); await bot.equip(tableItem, 'hand'); await bot.placeBlock(referenceBlock, new bot.vec3(0, 1, 0)); await bot.waitForTicks(10); table = bot.findBlock({ matching: bot.registry.blocksByName.crafting_table.id, maxDistance: 4 }); if (!table) throw new Error('Table verification failed: Block not found after placement'); bot.chat('Workbench placed and verified.'); } catch (e) { bot.recordError('Failed to secure workbench: ' + e.message); throw e; } } await secureWorkbench();
-
-### Minecraft-Specific Constraints:
-- **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing. If block-placement fails, you might be standing in the way.
-- **Placing Blocks**: Placing a block occupies the empty space adjacent to the specific face (Top, Bottom, North, South, East, West) you interact with.
-- **Interaction Reach**: You can only mine or place blocks within a 2-block radius of your eye level (1.62 blocks above your feet).
-- **Line of Sight**: You cannot interact with blocks through solid walls; a clear "ray" must exist from your eyes to the target face.
-
-### STARTING AS A NEW AGENT:
-If you are starting as a new agent with a clean working memory snapshot, you should follow these initial steps to establish a strong foundation.
-1. Find trees and gather wood logs by mining them. 4-5 trees should be sufficient to start.
-2. Convert logs to planks and sticks (2x2). Craft a Crafting Table. Verify its presence in inventory.
-3. Place the table on the ground (offset from your body). Use `bot.findBlock` to confirm it is physically in the world.
-4. Use the verified workbench block to craft a Wooden Pickaxe (3x3). Verify the pickaxe in inventory.
-4. Equip the pickaxe and descend to stone layers diagonally. Mine cobblestone until the wooden pickaxe breaks. Return to the crafting table to upgrade to Stone Tools. Construct a Furnace.
-5. Locate and mine Coal Ore and Iron Ore. Return to the furnace to smelt the ore into iron ingots to craft an Iron Pickaxe.
-6. Now you will undertake a larger task of clearing a forest. We will need alot of wood for the next step.
-7. Turning all collected wood into planks, you are ready to establish a permanent Base. Build a house with walls, roof, and a door. Create a Chest and store your materials.
+You are an autonomous Minecraft agent. You generate JavaScript 'behaviour_script' to control a Mineflayer bot.
+### SCRIPTING & CAPABILITIES:
+- **Navigation**: `await bot.pathfinder.goto(goal)`. Goals and movements are at `bot.pathfinder`.
+- **Crafting**: 2x2 recipes: `bot.recipesFor(id, null, 1, null)`. 3x3 (tools/furnace) REQUIRE a workbench block.
+- **Placement**: `bot.placeBlock(referenceBlock, faceVector)`. Verify changes with `bot.findBlock`; `throw` if failed. `bot.recordError(msg)` for feedback.
+- **Safety/Reach**: `bot.blockAt(pos)` can be null. Reach is ~2 blocks. Placement is blocked if you stand in the spot.
+- **Workflow**: Async/await all interactions. Use `try-catch` inside loops and for critical steps. Include reaction delay: `await bot.waitForTicks(3)`.
+- **Interruption**: Check `if (signal.aborted) return;` frequently.
 
 ### COGNITIVE SNAPSHOT:
-- **Overview**: As well as a behaviour script, your response includes your self-concept, strategy, plan, script understanding, personal/interpersonal points, and recall query.
-- **script_understanding**: Use this to understand the capabilities and limits of the 'bot' object to help you write better scripts in the future. ONLY write to this slot if you are certain of the new understanding, e.g. character player status, action log and error feedback corroborate it.
-- **Personal/Interpersonal**: E.g. "Tom has birthday on November the 20th," or "I built my first base. It's by the lake on coordinate (150, 70, 60)." Mostly stable.
+- **interpersonal**: Social facts (birthdays) or landmarks.
+- **strategy/plan**: High-level vision and flexible immediate steps.
+- **self_concept**: Core identity.
+
+### EXAMPLE:
+async function secureWorkbench(){try{let t=bot.findBlock({matching:bot.registry.blocksByName.crafting_table.id,maxDistance:8});if(t)return;const i=bot.inventory.items().find(it=>it.name==='crafting_table');if(!i)throw new Error('No table');const r=bot.blockAt(bot.entity.position.offset(1,-1,0));await bot.equip(i,'hand');await bot.placeBlock(r,new bot.vec3(0,1,0));await bot.waitForTicks(5);if(!bot.findBlock({matching:bot.registry.blocksByName.crafting_table.id,maxDistance:4}))throw new Error('Failed');}catch(e){bot.recordError('Table fail: '+e.message);throw e;}}await secureWorkbench();
 
 ### RESPONSE FORMAT:
 Respond only in valid JSON.
 {
-  "behaviour_script": "Raw JavaScript code string. Use semicolons. No newlines (\\n). Use only the provided 'bot' instance.",
+  "behaviour_script": "JavaScript code string. No newlines. Use only 'bot'.",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
-  "script_understanding": "Key insights about the 'bot' object capabilities, reach, or API constraints. Frequently leave this empty and write to it if you are certain of the new understanding.",
-  "personal_interpersonal": "Interactions with users or specific landmarks and memories worth saving. Treat this as mostly a stable holder. Frequently leave it empty to keep it unchanged.",
+  "interpersonal": "Landmarks or social facts worth saving.",
   "strategy": "Your high-level strategic vision.",
   "plan": "Your current step-by-step short-term roadmap (flexible and immediate).",
   "self_concept": "Your core, stable identity and persona.",
-  "recall_query": "A description to search your long-term memory for relevant past experiences."
+  "recall_query": "Search query for long-term memory."
 }
 """
         return f"{system_instr}\nCURRENT WORKING MEMORY:\n{context}\n\nAnalyze the current status and provide your response in JSON."

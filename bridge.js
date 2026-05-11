@@ -59,6 +59,7 @@ bot.once('inject_allowed', () => {
                 
                 const moveCheckInterval = setInterval(() => {
                     if (completed) return;
+                    if (!bot.entity) return cleanup('Bot entity disappeared.');
                     const currentPos = bot.entity.position;
                     // If moved more than a tiny bit, reset the timer
                     if (currentPos.distanceTo(lastMovePos) > 0.2) {
@@ -98,7 +99,7 @@ bot.once('inject_allowed', () => {
                     if (res.status === 'noPath') cleanup('No path found to goal.');
                     else if (res.status === 'timeout') cleanup('Pathfinding search timed out.');
                     else if (res.status === 'stuck') cleanup('Bot is stuck while pathfinding.');
-                    else if (res.path.length === 0) {
+                    else if (res.status === 'partial' && res.path && res.path.length === 0) {
                         cleanup('Target is unreachable with current constraints (Partial Path Halt).');
                     }
                 };
