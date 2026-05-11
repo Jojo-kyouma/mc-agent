@@ -4,7 +4,7 @@ const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 51163; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 62396; // Change this to the port shown when you "Open to LAN"
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
 const WS_PORT = parseInt(process.argv[2]) || 8080;
@@ -41,7 +41,6 @@ bot.once('inject_allowed', () => {
         defaultMovements.allow1by1towers = false;
         defaultMovements.allowSprinting = false; // Mimic regular human walking
         defaultMovements.scafoldingBlocks = [];
-        defaultMovements.searchTimeout = 10000; // Force pathfinder to give up search after 10s
         bot.pathfinder.setMovements(defaultMovements);
 
         bot.pathfinder.goals = goals;
@@ -54,13 +53,25 @@ bot.once('inject_allowed', () => {
             return new Promise((resolve, reject) => {
                 let completed = false;
 
-                // Safety timeout: Rejects if pathfinding takes longer than 45 seconds total
-                const timeoutId = setTimeout(() => {
-                    cleanup('Pathfinding timed out (wrapper safety).');
-                }, 45000);
+                // Movement Watchdog: Detects if the bot has physically stopped moving
+                let lastMovePos = bot.entity.position.clone();
+                let lastMoveTime = Date.now();
+                
+                const moveCheckInterval = setInterval(() => {
+                    if (completed) return;
+                    const currentPos = bot.entity.position;
+                    // If moved more than a tiny bit, reset the timer
+                    if (currentPos.distanceTo(lastMovePos) > 0.2) {
+                        lastMovePos = currentPos.clone();
+                        lastMoveTime = Date.now();
+                    } else if (Date.now() - lastMoveTime > 2500) {
+                        // No significant movement for 2.5 seconds
+                        cleanup('Pathfinding halted: Bot is physically stuck or standing still.');
+                    }
+                }, 500);
 
                 const cleanup = (error = null) => {
-                    clearTimeout(timeoutId);
+                    clearInterval(moveCheckInterval);
                     if (completed) return;
                     completed = true;
 
@@ -87,6 +98,9 @@ bot.once('inject_allowed', () => {
                     if (res.status === 'noPath') cleanup('No path found to goal.');
                     else if (res.status === 'timeout') cleanup('Pathfinding search timed out.');
                     else if (res.status === 'stuck') cleanup('Bot is stuck while pathfinding.');
+                    else if (res.path.length === 0) {
+                        cleanup('Target is unreachable with current constraints (Partial Path Halt).');
+                    }
                 };
 
                 const onDeath = () => cleanup('Bot died while pathfinding.');
@@ -185,23 +199,6 @@ wss.on('connection', (ws) => {
             console.log("Error parsing command message:", err);
         }
     });
-    
-    const onBlockUpdate = (oldBlock, newBlock) => {
-        if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
-        if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
-
-        const position = newBlock.position;
-        const isAir = ['air', 'cave_air', 'void_air'].includes(newBlock.name);
-        
-        const payload = { type: 'BLOCK_UPDATE', position };
-        if (!isAir) payload.block = { name: newBlock.name, position };
-
-        ws.send(JSON.stringify(payload));
-    };
-
-    /*
-    bot.on('blockUpdate', onBlockUpdate);
-    */
 
     const sendStatus = () => {
         const status = {
@@ -244,7 +241,23 @@ wss.on('connection', (ws) => {
         }
         ws.send(JSON.stringify({ type: 'CHAT', username: username, message: processedMessage }));
     };
+
     bot.on('chat', onChat);
+
+    const onBlockUpdate = (oldBlock, newBlock) => {
+        if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
+        if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
+
+        const position = newBlock.position;
+        const isAir = ['air', 'cave_air', 'void_air'].includes(newBlock.name);
+        
+        const payload = { type: 'BLOCK_UPDATE', position };
+        if (!isAir) payload.block = { name: newBlock.name, position };
+
+        ws.send(JSON.stringify(payload));
+    };
+
+    bot.on('blockUpdate', onBlockUpdate);
 
     const sendEnvironment = (radius, force = false) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
@@ -301,10 +314,14 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'ENVIRONMENT', entities, blocks }));
     };
 
-    /* 
     bot.on('move', sendEnvironment);
     bot.on('spawn', sendEnvironment);
-    */
+
+    // If the bot is already spawned when the cortex connects, send initial data immediately
+    if (bot.entity) {
+        sendStatus();
+        sendEnvironment(ENVIRONMENT_RADIUS, true); // This radius might be too small for initial spatial awareness
+    }
 
     const onEntityUpdate = (entity) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity || entity === bot.entity) return;
@@ -324,10 +341,9 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify(payload));
     };
 
-    /*
     bot.on('entitySpawn', onEntityUpdate);
     bot.on('entityGone', onEntityUpdate);
-    */
+
 
     ws.on('close', () => {
         console.log("Cortex disconnected from WebSocket.");

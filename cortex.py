@@ -105,14 +105,18 @@ class WorkingMemory:
     def to_string(self) -> str:
         """Pipeline to consolidate working memory into a single string."""
         context_parts = [
-            f"### Physical Status\n{json.dumps(self.status, indent=2)}"
+            f"### Physical Status/Inventory\n{json.dumps(self.status, indent=2)}"
         ]
+
+        if self.environment:
+            env_display = {k: v for k, v in self.environment.items() if k != 'type'}
+            context_parts.append(f"### Immediate Surrounding\n{json.dumps(env_display, indent=2)}")
 
         mappings = [
             ("Strategy", self.strategy),
             ("Short-Term Step-by-StepPlan", self.plan),
             ("Self-Concept", self.self_concept),
-            ("Script Understanding", self.script_understanding),
+            ("'bot' Object & Script Understanding", self.script_understanding),
             ("Personal/Interpersonal", self.personal_interpersonal),
             ("Social Dialogue", self.social),
             ("Activity Log (Critical Feedback for Debugging behaviour scripts)", self.episodic)
@@ -499,14 +503,16 @@ A working memory snapshot is provided to you in each prompt.
 1. **Ambitious Scale**: Aim for higher-impact objectives—automate the clearing of veins, excavation of areas, or systematic cave exploration. 
 2. **Efficiency**: Always prefer solutions that achieve more with fewer steps. For example, find a cave instead of digging straight down, or gather nearby resources while navigating to a target.
 3. **Heuristic Data Acquisition**: When encountering script failures, execute diagnostic scripts to gather relevant data.
-4. **Inventory Awareness**: It can be useful to check on the bot inventory, to ensure prerequisites for actions are met.
+4. **World Awareness**: It can be useful to properly read the 'Status/Inventory' and 'Immediate Surrounding' information provided by the working memory before writing the script, to ensure prerequisites for actions are met.
 
 ### CAPABILITIES (The 'bot' Object):
 The `bot` instance is a standard Mineflayer bot (v1.20.1). You have access to its full API (e.g., `bot.recipesFor`, `bot.inventory`, `bot.findBlocks`, `bot.chat`).
-Key extensions and configurations include:
+Key extensions, crafting logic, and configurations include:
 - **Navigation**: `bot.pathfinder` is ready. Move using `await bot.pathfinder.goto(goal)`. Goals (e.g., `GoalNear`) and `Movements` are available at `bot.pathfinder.goals` and `bot.pathfinder.Movements`.
 - **Math**: `bot.vec3` library is attached for 3D vector utilities (e.g., `new bot.vec3(x, y, z)`).
 - **Feedback**: `bot.recordError(message)` reports script-level logical failures to your episodic memory.
+- **Crafting**: To craft items requiring a 3x3 grid (tools, armor, etc.), you MUST find or place a `crafting_table` block first. Use `bot.findBlock({ matching: bot.registry.blocksByName.crafting_table.id, maxDistance: 5 })`. You MUST pass this block object as the 4th argument to `bot.recipesFor` and the 3rd argument to `bot.craft`.
+- **Registry**: Always use `bot.registry.itemsByName['item_name']` or `bot.registry.blocksByName['block_name']`. Check if the resulting object exists before accessing `.id`.
 
 ### CODE GENERATION RULES:
 1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
@@ -514,26 +520,27 @@ Key extensions and configurations include:
 3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
 4. **Robustness & Error Handling**: Wrap interactions and logic in `try-catch` blocks and call `bot.recordError(message)` within the `catch` block. You MUST be very generous with `try-catch` blocks. If a step is believed to be critical for the rest of the script then `throw` the error to stop execution.
 5. **Loop Robustness**: When iterating over multiple targets (like logs or ores), wrap the logic INSIDE the loop in a `try-catch`. This ensures that if one target is unreachable, the script can continue to the next one instead of failing entirely.
-6. **Interruption**: Your script is passed a `signal` object. You should check `if (signal.aborted) return;` frequently (e.g., at the start of loops and after long-running async calls) to halt execution immediately if a higher priority task arises.
+6. **Verification**: After crafting or digging, verify the item is in `bot.inventory.items()` before attempting to `equip` or use it. Never assume an action succeeded without checking state.
+7. **Interruption**: Your script is passed a `signal` object. You should check `if (signal.aborted) return;` frequently to halt execution immediately if a higher priority task arises.
 
 ### EXAMPLE SCRIPT:
-async function gather() { const logNames = ['oak_log', 'birch_log']; const targets = bot.findBlocks({ matching: (block) => logNames.includes(block.name), maxDistance: 32, count: 5 }); if (targets.length === 0) { bot.chat('No logs found.'); return; } for (const pos of targets) { if (signal.aborted) return; try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(pos.x, pos.y, pos.z, 2)); if (signal.aborted) return; await bot.waitForTicks(3); const b = bot.blockAt(pos); if (!b || b.name.includes('air')) continue; await bot.dig(b); await bot.waitForTicks(3); } catch (e) { bot.recordError(`Failed to reach or harvest target at ${pos}: ${e.message}`); } } bot.chat('Done gathering.'); } await gather();
+async function craftAndEquip() { try { const itemData = bot.registry.itemsByName['wooden_pickaxe']; if (!itemData) return; const recipe = bot.recipesFor(itemData.id, null, 1, null)[0]; if (!recipe) { bot.chat('Missing ingredients for pickaxe'); return; } await bot.craft(recipe, 1, null); await bot.waitForTicks(5); const tool = bot.inventory.items().find(i => i.name === 'wooden_pickaxe'); if (tool) await bot.equip(tool, 'hand'); } catch (e) { bot.recordError('Crafting failed: ' + e.message); } } await craftAndEquip();
 
 ### Minecraft-Specific Constraints:
 - **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing. If block-placement fails, you might be standing in the way.
 - **Placing Blocks**: Placing a block occupies the empty space adjacent to the specific face (Top, Bottom, North, South, East, West) you interact with.
-- **Interaction Reach**: You can only mine or place blocks within a 3-block radius of your eye level (1.62 blocks above your feet).
+- **Interaction Reach**: You can only mine or place blocks within a 2-block radius of your eye level (1.62 blocks above your feet).
 - **Line of Sight**: You cannot interact with blocks through solid walls; a clear "ray" must exist from your eyes to the target face.
 
 ### STARTING AS A NEW AGENT:
 If you are starting as a new agent with a clean working memory snapshot, you should follow these initial steps to establish a strong foundation.
-1. Harvest raw logs.
-2. Convert logs to planks and sticks to craft a Crafting Table and a Wooden Pickaxe.
-3. Descend to stone layers or find surface outcroppings to mine Cobblestone. Use the crafting table to upgrade to Stone Tools (Pickaxe, Axe, and Sword). Crafting table must be placed in an open area, and not where the agent is standing.
-4. Construct a Furnace from cobblestone. Secure fuel (coal or charcoal) to smelt raw ores.
-5. Locate and mine Iron Ore. Smelt the ore into iron ingots to craft Iron Tier equipment, enabling the collection of advanced materials like Diamond and Redstone.
-6. If not already returned to surface-level, return to the surface. Collect alot more wood.
-7. Turning all collected wood into planks, you are ready to establish a permanent structure (Base) with storage containers (Chests) to serialize and protect accumulated resources. It can be a house or a castle.
+1. Find trees and gather wood logs by mining them. 4-5 trees should be sufficient to start.
+2. Convert logs to planks and sticks (2x2 crafting). Craft a Crafting Table. Place the table on the ground nearby. To place: find the block below your feet using `bot.blockAt(bot.entity.position.offset(0, -1, 0))` and place against its Top face.
+3. Once the table is placed, use `bot.findBlock` to get the table block. Use that block object in `recipesFor` and `craft` to create a Wooden Pickaxe.
+4. Equip the pickaxe and descend to stone layers diagonally. Mine cobblestone until the wooden pickaxe breaks. Return to the crafting table to upgrade to Stone Tools. Construct a Furnace.
+5. Locate and mine Coal Ore and Iron Ore. Return to the furnace to smelt the ore into iron ingots to craft an Iron Pickaxe.
+6. Now you will undertake a larger task of clearing a forest. We will need alot of wood for the next step.
+7. Turning all collected wood into planks, you are ready to establish a permanent Base. Build a house with walls, roof, and a door. Create a Chest and store your materials.
 
 ### COGNITIVE SNAPSHOT:
 - **Overview**: As well as a behaviour script, your response includes your self-concept, strategy, plan, script understanding, personal/interpersonal points, and recall query.
@@ -545,7 +552,7 @@ Respond only in valid JSON.
 {
   "behaviour_script": "Raw JavaScript code string. Use semicolons. No newlines (\\n). Use only the provided 'bot' instance.",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
-  "script_understanding": "Key insights about Mineflayer bot capabilities, reach, or API constraints discovered. ONLY if certain.",
+  "script_understanding": "Key insights about the 'bot' object capabilities, reach, or API constraints. Frequently leave this empty and write to it if you are certain of the new understanding.",
   "personal_interpersonal": "Interactions with users or specific landmarks and memories worth saving. Treat this as mostly a stable holder. Frequently leave it empty to keep it unchanged.",
   "strategy": "Your high-level strategic vision.",
   "plan": "Your current step-by-step short-term roadmap (flexible and immediate).",
