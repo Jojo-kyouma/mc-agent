@@ -4,14 +4,19 @@ const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 62374; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 51071; // Change this to the port shown when you "Open to LAN"
+
+// Parse CLI args: node bridge.js [ws_port] [bot_username]
+const WS_PORT = parseInt(process.argv[2]) || 8080;
+const BOT_USERNAME = process.argv[3] || 'Agent';
+
 const ENVIRONMENT_RADIUS = 2; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
 const BLOCK_UPDATE_RADIUS = ENVIRONMENT_RADIUS + 4; // Interaction distance (Bot can reach blocks ~4 blocks away)
 
 const bot = mineflayer.createBot({ 
     host: 'localhost',
     port: MINECRAFT_PORT,
-    username: 'Agent',
+    username: BOT_USERNAME,
     auth: 'offline',
     version: '1.20.1'
 });
@@ -84,7 +89,7 @@ bot.once('inject_allowed', () => {
     }
 });
 
-const wss = new WebSocket.Server({ port: 8080 });
+const wss = new WebSocket.Server({ port: WS_PORT });
 
 // Mineflayer bot error handling
 bot.on('error', err => console.error(`[Mineflayer Bot Error]: ${err}`));
@@ -320,4 +325,12 @@ wss.on('connection', (ws) => {
         bot.removeListener('spawn', sendEnvironment);
     });
 
+});
+
+// Resource cleanup on exit
+process.on('SIGTERM', () => {
+    console.log('Stopping actuator...');
+    bot.quit();
+    wss.close();
+    process.exit(0);
 });
