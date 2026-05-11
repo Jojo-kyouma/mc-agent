@@ -92,24 +92,39 @@ bot.on('kicked', reason => console.log(`[Mineflayer Bot Kicked]: ${reason}`));
 bot.on('end', reason => console.log(`[Mineflayer Bot Disconnected]: ${reason}`));
 wss.on('error', err => console.error(`[WebSocket Server Error]: ${err}`));
 
-let pathError = false;
 let lastScanPos = null;
+let currentAbortController = null;
 
 wss.on('connection', (ws) => {
     lastScanPos = null;
+
+    const stopPhysicalActions = () => {
+        bot.pathfinder.setGoal(null);
+        if (bot.targetDigBlock) bot.stopDigging();
+    };
+
+    const abortCurrentScript = () => {
+        if (currentAbortController) {
+            currentAbortController.abort();
+            currentAbortController = null;
+        }
+        stopPhysicalActions();
+    };
 
     console.log("Cortex connected.");
 
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
-            if (data.type === 'ACTION' && data.behaviour_script) {
+            if (data.type === 'ABORT') {
+                abortCurrentScript();
+            } else if (data.type === 'ACTION' && data.behaviour_script) {
 
                 console.log(`[*] Executing: ${data.description}`);
                 
-                // Stop current actions to prepare for the new instruction
-                bot.pathfinder.setGoal(null);
-                if (bot.targetDigBlock) bot.stopDigging();
+                abortCurrentScript();
+                currentAbortController = new AbortController();
+                const { signal } = currentAbortController;
 
                 // Allow scripts to report internal errors to episodic memory
                 bot.recordError = (msg) => {
@@ -120,14 +135,28 @@ wss.on('connection', (ws) => {
 
                 try {
                     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-                    const execute = new AsyncFunction('bot', 'vec3', 'GoalNear', 'Movements', 'goals', data.behaviour_script);
-                    await execute(bot, vec3, goals.GoalNear, Movements, goals);
-                    ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
+                    // Pass signal to the behavior script so it can check signal.aborted
+                    const execute = new AsyncFunction('bot', 'vec3', 'GoalNear', 'Movements', 'goals', 'signal', data.behaviour_script);
+                    
+                    const scriptPromise = execute(bot, vec3, goals.GoalNear, Movements, goals, signal);
+                    const abortPromise = new Promise((_, reject) => {
+                        signal.addEventListener('abort', () => reject(new Error('Script aborted')), { once: true });
+                    });
+
+                    await Promise.race([scriptPromise, abortPromise]);
+
+                    if (!signal.aborted) {
+                        ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
+                    }
                 } catch (scriptErr) {
-                    console.error(`[Script Error]: ${scriptErr}`);
-                    ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message, description: data.description }));
+                    if (scriptErr.message !== 'Script aborted') {
+                        console.error(`[Script Error]: ${scriptErr}`);
+                        ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message, description: data.description }));
+                    }
                 } finally {
-                    ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
+                    if (!signal.aborted) {
+                        ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
+                    }
                 }
             }
         } catch (err) {
@@ -163,11 +192,24 @@ wss.on('connection', (ws) => {
                 count: item.count,
                 slot: item.slot
             })),
+            onFire: (bot.entity.metadata[0] & 0x01) !== 0,
             heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
             position: bot.entity.position
         };
         ws.send(JSON.stringify(status));
     };
+
+    bot.on('itemBreak', (item) => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ITEM_BREAK', item: item.name }));
+        }
+    });
+
+    bot.on('entityHurt', (entity) => {
+        if (entity === bot.entity && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'AGENT_ATTACKED' }));
+        }
+    });
 
     bot.on('health', sendStatus);
     bot.on('playerCollect', sendStatus);

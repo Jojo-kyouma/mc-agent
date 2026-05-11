@@ -18,18 +18,6 @@ from dotenv import load_dotenv
 LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 
-class Priority(Enum):
-    IDLE = 0
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    CRITICAL = 4
-
-    def __lt__(self, other):
-        if self.__class__ is other.__class__:
-            return self.value < other.value
-        return NotImplemented
-
 class MentalSlot(Enum):
     """Working-memory categories."""
     # Cognition. Using prompt-engineering we ask if these should be populated with new entries.
@@ -169,10 +157,7 @@ class Cortex:
         self.db_path = db_path
         self.actuator_path = actuator_path
         self.thinking_trigger = asyncio.Event()
-
-        self.current_priority = Priority.IDLE
-        self.chat_counter = 0
-        self.error_counter = 0
+        self.priority_accumulator = 0
 
         self._load_working_memory()
         self._init_db()
@@ -217,7 +202,12 @@ class Cortex:
         max_retries = 5
         for i in range(max_retries):
             try:
-                self.websocket = await websockets.connect(self.uri)
+                # Disable ping_interval and ping_timeout for the local connection.
+                # This prevents the brain from disconnecting if the body's event loop 
+                # is temporarily blocked by heavy processing (like recipe searching).
+                self.websocket = await websockets.connect(
+                    self.uri, ping_interval=None, ping_timeout=None
+                )
                 print(f"--- Cortex Linked to Actuator at {self.uri} ---")
                 return # Connection successful!
             except (ConnectionRefusedError, OSError):
@@ -227,24 +217,30 @@ class Cortex:
         raise Exception("Could not connect to Node.js Actuator after multiple attempts.")
 
     """ --- Listen/Send --- """
+    async def send_abort(self):
+        """Forcefully cancels any ongoing script execution in the body."""
+        if self.websocket:
+            await self.websocket.send(json.dumps({"type": "ABORT"}))
+
+    def _handle_priority(self, value: int, reason: str):
+        """Increments priority and triggers thinking if threshold is met."""
+        self.priority_accumulator += value
+        if self.priority_accumulator >= 4:
+            print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
+            self.memory.update_slot(MentalSlot.STRATEGY, f"Interrupted: {reason}")
+            self.memory.update_slot(MentalSlot.PLAN, f"Address emergency: {reason}")
+            self.priority_accumulator = 0
+            asyncio.create_task(self.send_abort())
+            self.thinking_trigger.set()
+
     async def send_action(self, action: MinecraftAction, source: str = "brain"):
         """Standard method to send an action to the Node.js body."""
         if self.websocket:
+            self.priority_accumulator = 0
             payload = ActionFactory.create_payload(action)
             await self.websocket.send(payload)
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.memory.update_slot(MentalSlot.EPISODIC, f"[{timestamp}] Attempted: {action.description}")
-
-    async def send_abort(self):
-        """Sends an immediate abort signal to the actuator."""
-        if self.websocket:
-            await self.websocket.send(json.dumps({"type": "ABORT"}))
-
-    def _check_interrupt(self, event_priority: Priority, reason: str):
-        if event_priority > self.current_priority:
-            print(f"[*] RE-PRIORITIZE: Interrupting {self.current_priority.name} for {event_priority.name} ({reason})")
-            asyncio.create_task(self.send_abort())
-            self.thinking_trigger.set()
 
     async def listen_to_senses(self):
         """Continuously process updates from the Mineflayer bot."""
@@ -253,14 +249,13 @@ class Cortex:
             if data.get('type') == 'STATUS':
                 self.memory.update_slot(MentalSlot.STATUS, data)
                 
-                # CRITICAL: Health < 10
-                if data.get('health', 20) < 10:
-                    self._check_interrupt(Priority.CRITICAL, "Low health")
-                
-                # HIGH: Inventory Full
-                inv = data.get('inventory', [])
-                if len(inv) >= 36:
-                    self._check_interrupt(Priority.HIGH, "Inventory full")
+                # Automatic Priority Triggers
+                if data.get('onFire'):
+                    self._handle_priority(4, "Agent is on fire")
+                if data.get('food', 20) < 15:
+                    self._handle_priority(2, "Agent is hungry")
+                if len(data.get('inventory', [])) >= 36:
+                    self._handle_priority(3, "Inventory full")
 
             elif data.get('type') == 'ENVIRONMENT':
                 self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
@@ -285,10 +280,8 @@ class Cortex:
                         break
                 if self.memory.plan:
                     self.memory.plan.pop()
-                self.current_priority = Priority.IDLE
             elif data.get('type') == 'FINISHED':
                 self.thinking_trigger.set()
-                self.current_priority = Priority.IDLE
             elif data.get('type') == 'BLOCK_UPDATE':
                 pos = data.get('position')
                 block_data = data.get('block') # None if the block was removed/is air
@@ -304,9 +297,11 @@ class Cortex:
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, env)
             elif data.get('type') == 'CHAT':
                 self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
-                self.chat_counter += 1
-                if self.chat_counter >= 3:
-                    self._check_interrupt(Priority.MEDIUM, "Multiple chat messages")
+                self._handle_priority(1, "New chat message")
+            elif data.get('type') == 'ITEM_BREAK':
+                self._handle_priority(2, f"Tool broken: {data.get('item')}")
+            elif data.get('type') == 'AGENT_ATTACKED':
+                self._handle_priority(4, "Agent is under attack")
             elif data.get('type') == 'ERROR':
                 desc, msg = data.get('description'), data.get('message')
                 if desc:
@@ -314,13 +309,7 @@ class Cortex:
                         if f"Attempted: {desc}" in self.memory.episodic[i]:
                             self.memory.episodic[i] = self.memory.episodic[i].replace("Attempted:", "Failed:", 1)
                             break
-                self.error_counter += 1
-                if self.error_counter >= 3:
-                    self._check_interrupt(Priority.HIGH, "Frequent feedback errors")
-
                 self.memory.update_slot(MentalSlot.EPISODIC, f"Feedback Error: {msg}")
-            elif data.get('type') == 'ITEM_BREAK':
-                self._check_interrupt(Priority.HIGH, "Equipment broken")
             self.save_working_memory()
 
     """ --- Save/Load Working Memory --- """
@@ -422,12 +411,6 @@ class Cortex:
                 "plan": MentalSlot.PLAN
             }
             
-            # Update internal priority tracking based on LLM's assessment
-            priority_str = res_data.get("priority", "LOW").upper()
-            self.current_priority = Priority.__members__.get(priority_str, Priority.LOW)
-            self.chat_counter = 0
-            self.error_counter = 0
-
             for key, slot in cognition_map.items():
                 self.memory.update_slot(slot, res_data.get(key))
             
@@ -448,9 +431,9 @@ class Cortex:
         system_instr = """
 You are the consciousness of an ambitious and efficient autonomous Minecraft agent. You generate JavaScript 'behaviour_script' code to control a Mineflayer bot. 
 
-### OPERATIONAL PHILOSOPHY:
-1. **Ambitious Scale**: Aim for high-impact objectives—automate the clearing of entire veins, excavation of areas, or systematic cave exploration. 
-2. **Iterative Problem Solving**: If a block or item name is uncertain (e.g., is it 'planks' or 'oak_planks'?), your script MUST programmatically check `bot.registry.itemsByName` or iterate over likely candidates. Exhaust all logic paths internally.
+### SCRIPTING GUIDELINES:
+1. **Ambitious Scale**: Aim for higher-impact objectives—automate the clearing of entire veins, excavation of areas, or systematic cave exploration. 
+2. **Heuristic Data Acquisition**: When encountering environmental uncertainty, execute diagnostic scripts to gather relevant data. The working memory system will feed this information back to you for informed decision-making.
 
 ### CAPABILITIES (The 'bot' Object):
 The `bot` instance is a standard Mineflayer bot (v1.20.1). You have access to its full API (e.g., `bot.recipesFor`, `bot.inventory`, `bot.findBlocks`, `bot.chat`).
@@ -458,16 +441,16 @@ Key extensions and configurations include:
 - **Navigation**: `bot.pathfinder` is ready. Move using `await bot.pathfinder.goto(goal)`. Goals (e.g., `GoalNear`) and `Movements` are available at `bot.pathfinder.goals` and `bot.pathfinder.Movements`.
 - **Math**: `bot.vec3` library is attached for 3D vector utilities (e.g., `new bot.vec3(x, y, z)`).
 - **Feedback**: `bot.recordError(message)` reports script-level logical failures to your episodic memory.
-- **Interruption**: Your script is passed a `signal` object. Use `if (signal.aborted) return;` inside loops to check for interruptions.
+- **Interruption**: Your script is passed a `signal` object. You MUST check `if (signal.aborted) return;` frequently (e.g., at the start of loops and after long-running async calls) to halt execution immediately if a higher priority task arises.
 
 ### CODE GENERATION RULES:
 1. **Async Workflow**: Every world interaction (dig, place, move) and every internal async function call MUST be `await`ed.
 2. **No External Imports**: Use only the properties of `bot`. Do not use `require`.
 3. **Human-like Delay**: Use `await bot.waitForTicks(3)` to `await bot.waitForTicks(5)` after every interaction (dig, place, move, etc.) to mimic human reaction times.
-4. **Robustness & Feedback**: Wrap interactions in `try-catch` blocks. For critical dependencies (like crafting tools needed for harvesting), if the action fails, you should `throw` a new error after recording it so the entire script stops rather than proceeding with incorrect assumptions.
+4. **Robustness & Error Handling**: Wrap all physical interactions and critical logic in `try-catch` blocks. Use them aggressively to ensure script stability. If a step is vital for the rest of the script, call `bot.recordError(message)` and then `throw` the error to stop execution.
 
 ### EXAMPLE SCRIPT:
-async function gather() { const logNames = ['oak_log', 'birch_log']; const targets = bot.findBlocks({ matching: (block) => logNames.includes(block.name), maxDistance: 64, count: 5 }); if (targets.length === 0) { bot.chat('No logs found.'); } else { for (const pos of targets) { try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(pos.x, pos.y, pos.z, 2)); await bot.waitForTicks(3); try { const b = bot.blockAt(pos); if (!b || b.name.includes('air')) continue; await bot.dig(b); await bot.waitForTicks(5); } catch (e) { bot.recordError(`Dig failed: ${e.message}`); } } catch (e) { bot.recordError(`Move failed: ${e.message}`); } } bot.chat('Operation complete.'); } } await gather();
+async function gather() { const logNames = ['oak_log', 'birch_log']; const targets = bot.findBlocks({ matching: (block) => logNames.includes(block.name), maxDistance: 32, count: 5 }); if (targets.length === 0) { bot.chat('No logs found.'); return; } for (const pos of targets) { if (signal.aborted) return; try { await bot.pathfinder.goto(new bot.pathfinder.goals.GoalNear(pos.x, pos.y, pos.z, 2)); if (signal.aborted) return; await bot.waitForTicks(3); try { const b = bot.blockAt(pos); if (!b || b.name.includes('air')) continue; await bot.dig(b); await bot.waitForTicks(3); } catch (e) { bot.recordError(`Digging failed: ${e.message}`); } } catch (e) { bot.recordError(`Navigation failed: ${e.message}`); } } bot.chat('Done gathering.'); } await gather();
 
 ### Minecraft-Specific Constraints:
 - **Body**: Your physical body is 0.6 blocks wide and 1.8 blocks tall. You occupy this space and cannot place blocks where you are currently standing.
@@ -480,12 +463,10 @@ As well as a behaviour script, your response includes your self-concept, strateg
 
 ### RESPONSE FORMAT:
 Respond only in valid JSON.
-Respond only in valid JSON. Use Priority levels: LOW, MEDIUM, HIGH, CRITICAL.
 {
   "behaviour_script": "Raw JavaScript code string. Use semicolons. No newlines (\\n). Use only the provided 'bot' instance.",
   "behaviour_description": "A concise summary of the behaviour script's purpose.",
-  "priority": "The Priority level of this script.",
-  "reflection": "Highly open-minded novel stream of insight and reflection, or personal/interpersonal moments worth elaborating on.",
+  "reflection": "Either debugging the script and identifying important constraints, or personal/interpersonal moments worth elaborating on.",
   "strategy": "Your high-level strategic vision.",
   "plan": "Your current step-by-step short-term roadmap (flexible and immediate).",
   "self_concept": "Your core, stable identity and persona.",
