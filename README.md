@@ -38,7 +38,7 @@ uv sync
     ```
 5.  **Run the Program**: Start the agent orchestrator:
     ```bash
-    python cortex.py
+    python cortex.py [Names or Agent Count]
     ```
     The Python script will automatically spawn the Node.js bridge and begin the cognitive cycle.
 
@@ -56,4 +56,4 @@ This project serves as a low-cost testbed for **Embodied AI**. While traditional
 * **Robotics Prototyping:** By simulating the constraints of a humanoid body, the project develops logic for error recovery and adaptation that is directly applicable to real-world humanoid robotics and industrial automation.
 
 ### Social Experiment
-Project is quite resource-efficient. It might be possible to instantiate 100 bots in the minecraft world, encourage them to be social, and watch them build a civilisation together.
+Project is quite resource-efficient. It should be possible to instantiate 100 bots in the minecraft world, encourage them to be social, and watch them build a civilisation together, all that with only a i7, linux and a headless minecraft server.
