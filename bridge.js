@@ -1,16 +1,18 @@
 const mineflayer = require('mineflayer');
+const mcData = require('minecraft-data')('1.20.1');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const WebSocket = require('ws');
 const vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 52165; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 55580; // Change this to the port shown when you "Open to LAN"
+const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
 const WS_PORT = parseInt(process.argv[2]) || 8080;
 const BOT_USERNAME = process.argv[3] || 'Agent';
 
-const ENVIRONMENT_RADIUS = 2; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
+const ENVIRONMENT_RADIUS = 3; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
 const BLOCK_UPDATE_RADIUS = ENVIRONMENT_RADIUS + 4; // Interaction distance (Bot can reach blocks ~4 blocks away)
 
 const bot = mineflayer.createBot({ 
@@ -22,133 +24,23 @@ const bot = mineflayer.createBot({
 });
 bot.loadPlugin(pathfinder);
 
-const getItemName = (entity) => {
-    if (entity.name !== 'item') return entity.name || entity.username || 'unknown';
-    try {
-        const itemData = entity.metadata[8];
-        if (itemData && itemData.itemId !== undefined) {
-            const item = bot.registry.items[itemData.itemId];
-            return item ? item.name : 'dropped_item';
-        }
-    } catch (e) {}
-    return 'dropped_item';
-};
-
-bot.once('inject_allowed', () => {
-    if (bot.pathfinder) {
-        const defaultMovements = new Movements(bot);
-        defaultMovements.allowDig = false;
-        defaultMovements.allow1by1towers = false;
-        defaultMovements.allowSprinting = false; // Mimic regular human walking
-        defaultMovements.scafoldingBlocks = [];
-        bot.pathfinder.setMovements(defaultMovements);
-
-        bot.pathfinder.goals = goals;
-        bot.pathfinder.Movements = Movements;
-        bot.vec3 = vec3;
-
-        console.log("Pathfinder namespaces successfully attached to bot.");
-
-        bot.pathfinder.goto = async (goal) => {
-            return new Promise((resolve, reject) => {
-                let completed = false;
-
-                // Movement Watchdog: Detects if the bot has physically stopped moving
-                let lastMovePos = bot.entity.position.clone();
-                let lastMoveTime = Date.now();
-                
-                const moveCheckInterval = setInterval(() => {
-                    if (completed) return;
-                    if (!bot.entity) return cleanup('Bot entity disappeared.');
-                    const currentPos = bot.entity.position;
-                    // If moved more than a tiny bit, reset the timer
-                    if (currentPos.distanceTo(lastMovePos) > 0.2) {
-                        lastMovePos = currentPos.clone();
-                        lastMoveTime = Date.now();
-                    } else if (Date.now() - lastMoveTime > 2500) {
-                        // No significant movement for 2.5 seconds
-                        cleanup('Pathfinding halted: Bot is physically stuck or standing still.');
-                    }
-                }, 500);
-
-                const cleanup = (error = null) => {
-                    clearInterval(moveCheckInterval);
-                    if (completed) return;
-                    completed = true;
-
-                    bot.removeListener('goal_reached', onGoalReached);
-                    bot.removeListener('path_update', onPathUpdate);
-                    bot.removeListener('path_stop', onPathStop);
-                    bot.removeListener('death', onDeath);
-                    bot.removeListener('kicked', onKicked);
-                    bot.removeListener('end', onEnd);
-
-                    bot.clearControlStates();
-
-                    if (error) {
-                        bot.pathfinder.setGoal(null);
-                        reject(new Error(error));
-                    } else {
-                        resolve();
-                    }
-                };
-
-                const onGoalReached = () => cleanup();
-                const onPathStop = () => cleanup('Pathfinding stopped.');
-                const onPathUpdate = (res) => {
-                    if (res.status === 'noPath') cleanup('No path found to goal.');
-                    else if (res.status === 'timeout') cleanup('Pathfinding search timed out.');
-                    else if (res.status === 'stuck') cleanup('Bot is stuck while pathfinding.');
-                    else if (res.status === 'partial' && res.path && res.path.length === 0) {
-                        cleanup('Target is unreachable with current constraints (Partial Path Halt).');
-                    }
-                };
-
-                const onDeath = () => cleanup('Bot died while pathfinding.');
-                const onKicked = (reason) => cleanup(`Bot was kicked: ${reason}`);
-                const onEnd = () => cleanup('Bot disconnected.');
-
-                bot.on('goal_reached', onGoalReached);
-                bot.on('path_update', onPathUpdate);
-                bot.on('path_stop', onPathStop);
-                bot.on('death', onDeath);
-                bot.on('kicked', onKicked);
-                bot.on('end', onEnd);
-
-                bot.pathfinder.setGoal(goal);
-            });
-        };
-    }
-});
-
 const wss = new WebSocket.Server({ port: WS_PORT });
-
-// Mineflayer bot error handling
-bot.on('error', err => console.error(`[Mineflayer Bot Error]: ${err}`));
-bot.on('kicked', reason => console.log(`[Mineflayer Bot Kicked]: ${reason}`));
-bot.on('end', reason => console.log(`[Mineflayer Bot Disconnected]: ${reason}`));
-wss.on('error', err => console.error(`[WebSocket Server Error]: ${err}`));
 
 let lastScanPos = null;
 let currentAbortController = null;
 
 wss.on('connection', (ws) => {
-    lastScanPos = null;
-
-    const stopPhysicalActions = () => {
+    const _stopPhysicalActions = () => {
         bot.pathfinder.setGoal(null);
         if (bot.targetDigBlock) bot.stopDigging();
     };
-
     const abortCurrentScript = () => {
         if (currentAbortController) {
             currentAbortController.abort();
             currentAbortController = null;
         }
-        stopPhysicalActions();
+        _stopPhysicalActions();
     };
-
-    console.log("Cortex connected.");
 
     ws.on('message', async (message) => {
         try {
@@ -156,43 +48,90 @@ wss.on('connection', (ws) => {
             if (data.type === 'ABORT') {
                 abortCurrentScript();
             } else if (data.type === 'ACTION' && data.behaviour_script) {
-
                 console.log(`[*] Executing: ${data.description}`);
                 
                 abortCurrentScript();
                 currentAbortController = new AbortController();
                 const { signal } = currentAbortController;
 
-                // Allow scripts to report internal errors to episodic memory
                 bot.recordError = (msg) => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'ERROR', message: msg, description: data.description }));
                     }
                 };
 
+                bot.recordSuccess = () => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
+                    }
+                };
+
+                bot.recordInfo = (msg) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'INFO', message: msg, description: data.description }));
+                    }
+                };
+
+                bot.placeBlockSafe = async (referenceBlock, faceVector) => {
+                    if (!referenceBlock) {
+                        bot.recordError("Cannot place block: referenceBlock is null.");
+                        return;
+                    }
+                    const targetPos = referenceBlock.position.add(faceVector);
+                    
+                    if (bot.entity.position.distanceSquared(targetPos) < 1.5) {
+                        bot.recordInfo(`Moving to clear target space at ${targetPos.floored()}`);
+                        
+                        const awayPos = bot.entity.position.add(new Vec3(-1, 0, 1)); 
+                        const goal = new GoalNear(awayPos.x, awayPos.y, awayPos.z, 1);
+                        
+                        await bot.pathfinder.goto(goal);
+                    }
+                    if (signal.aborted) return;
+                    
+                    try {
+                        await bot.placeBlock(referenceBlock, faceVector);
+                    } catch (e) {
+                        bot.recordError(`Placement failed: ${e.message}`);
+                    }
+                };
+
+                bot.findIds = (query) => {
+                    return Object.values(mcData.items)
+                        .filter(i => i.name.includes(query))
+                        .map(i => i.id);
+                };
+
                 try {
                     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-                    // Pass signal to the behavior script so it can check signal.aborted
-                    const execute = new AsyncFunction('bot', 'vec3', 'GoalNear', 'Movements', 'goals', 'signal', data.behaviour_script);
+
+                    const wrappedScript = `
+                        try {
+                            ${data.behaviour_script}
+                            bot.recordSuccess();
+                        } catch (e) {
+                            bot.recordError(e.message);
+                            throw e;
+                        }
+                    `;
+
+                    const execute = new AsyncFunction('bot', 'vec3', 'Vec3', 'mcData', 'GoalNear', 'signal', wrappedScript);
+                    const scriptPromise = execute(bot, vec3, vec3, mcData, goals.GoalNear, signal);
                     
-                    const scriptPromise = execute(bot, vec3, goals.GoalNear, Movements, goals, signal);
                     const abortPromise = new Promise((_, reject) => {
                         signal.addEventListener('abort', () => reject(new Error('Script aborted')), { once: true });
                     });
 
                     await Promise.race([scriptPromise, abortPromise]);
 
-                    if (!signal.aborted) {
-                        ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
-                    }
                 } catch (scriptErr) {
                     if (scriptErr.message !== 'Script aborted') {
                         console.error(`[Script Error]: ${scriptErr}`);
-                        ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message, description: data.description }));
+                        ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message }));
                     }
                 } finally {
                     if (!signal.aborted) {
-                        ws.send(JSON.stringify({ type: 'FINISHED', description: data.description }));
+                        ws.send(JSON.stringify({ type: 'FINISHED' }));
                     }
                 }
             }
@@ -200,24 +139,6 @@ wss.on('connection', (ws) => {
             console.log("Error parsing command message:", err);
         }
     });
-
-    const sendStatus = () => {
-        const status = {
-            type: 'STATUS',
-            health: bot.health,
-            food: bot.food,
-            saturation: bot.foodSaturation,
-            inventory: bot.inventory.items().map(item => ({
-                name: item.name,
-                count: item.count,
-                slot: item.slot
-            })),
-            onFire: (bot.entity.metadata[0] & 0x01) !== 0,
-            heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
-            position: bot.entity.position
-        };
-        ws.send(JSON.stringify(status));
-    };
 
     bot.on('itemBreak', (item) => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -231,8 +152,25 @@ wss.on('connection', (ws) => {
         }
     });
 
+    const sendStatus = () => {
+        const inventoryMap = bot.inventory.items().reduce((acc, item) => {
+            acc[item.name] = (acc[item.name] || 0) + item.count;
+            return acc;
+        }, {});
+
+        const status = {
+            health: Math.round(bot.health),
+            food: bot.food,
+            saturation: bot.foodSaturation,
+            inventory: inventoryMap, 
+            onFire: (bot.entity.metadata[0] & 0x01) !== 0,
+            heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
+            position: bot.entity.position.floored()
+        };
+        ws.send(JSON.stringify(status));
+    };
     bot.on('health', sendStatus);
-    bot.on('playerCollect', sendStatus);
+    bot.on('updateSlot', sendStatus);
 
     const onChat = (username, message) => {
         if (username === bot.username) return;
@@ -242,30 +180,11 @@ wss.on('connection', (ws) => {
         }
         ws.send(JSON.stringify({ type: 'CHAT', username: username, message: processedMessage }));
     };
-
     bot.on('chat', onChat);
-
-    const onBlockUpdate = (oldBlock, newBlock) => {
-        if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
-        if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
-
-        const position = newBlock.position;
-        const isAir = ['air', 'cave_air', 'void_air'].includes(newBlock.name);
-        
-        const payload = { type: 'BLOCK_UPDATE', position };
-        if (!isAir) payload.block = { name: newBlock.name, position };
-
-        ws.send(JSON.stringify(payload));
-    };
-
-    // Environment logic is currently inactivated to reduce cognitive noise in Working Memory.
-    // bot.on('blockUpdate', onBlockUpdate);
 
     const sendEnvironment = (radius, force = false) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
 
-        // Ensure radius defaults to ENVIRONMENT_RADIUS if not a positive number
-        // This handles cases where radius is undefined, 0, or an event object.
         const actualRadius = (typeof radius === 'number' && radius > 0) 
             ? radius 
             : ENVIRONMENT_RADIUS;
@@ -275,97 +194,64 @@ wss.on('connection', (ws) => {
             const dx = Math.abs(currentPos.x - lastScanPos.x);
             const dz = Math.abs(currentPos.z - lastScanPos.z);
             const dy = currentPos.y - lastScanPos.y;
-            // Only scan if the bot has left the previous horizontal area or the vertical slice
             if (dx <= actualRadius && dz <= actualRadius && dy >= -1 && dy <= 2) return;
         }
 
         const botPos = currentPos.floored();
-        const blocks = [];
+        
+        const uniqueBlocks = new Set();
 
-        // Scan 4 layers vertically within the defined horizontal radius
         for (let y = -1; y <= 2; y++) {
             for (let x = -actualRadius; x <= actualRadius; x++) {
                 for (let z = -actualRadius; z <= actualRadius; z++) {
                     const block = bot.blockAt(botPos.offset(x, y, z));
-                    if (block && block.name !== 'air' && block.name !== 'cave_air' && block.name !== 'void_air') {
-                        blocks.push({ 
-                            name: block.name, 
-                            position: block.position 
-                        });
+                    if (block && !['air', 'cave_air', 'void_air'].includes(block.name)) {
+                        uniqueBlocks.add(block.name);
                     }
                 }
             }
         }
-        
-        const entities = Object.values(bot.entities)
-            .filter(e => e !== bot.entity && e.position.distanceTo(bot.entity.position) < 16)
-            .map(e => ({
-                id: e.id,
-                name: getItemName(e),
-                dist: Math.round(e.position.distanceTo(bot.entity.position)),
-                position: e.position
-            }))
-            .sort((a, b) => a.dist - b.dist)
-            .slice(0, 5);
-
-        // Prevent sending empty environments caused by unloaded chunks unless forced.
-        // Standard Minecraft worlds always have blocks (floor) nearby.
-        if (!force && blocks.length === 0 && entities.length === 0) return;
 
         lastScanPos = currentPos.clone();
-        ws.send(JSON.stringify({ type: 'ENVIRONMENT', entities, blocks }));
+
+        const blockList = [...uniqueBlocks];
+
+        ws.send(JSON.stringify({ 
+            type: 'ENVIRONMENT', 
+            blocks: blockList
+        }));
     };
+    bot.on('move', sendEnvironment);
 
-    // bot.on('move', sendEnvironment);
-    // bot.on('spawn', sendEnvironment);
-
-    // If the bot is already spawned when the cortex connects, send initial data immediately
-    if (bot.entity) {
-        sendStatus();
-        // sendEnvironment(ENVIRONMENT_RADIUS, true);
-    }
-
-    const onEntityUpdate = (entity) => {
-        if (ws.readyState !== WebSocket.OPEN || !bot.entity || entity === bot.entity) return;
+    const onBlockUpdate = (oldBlock, newBlock) => {
+        if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
         
-        const isGone = !bot.entities[entity.id];
-        if (!isGone && entity.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
+        // Check if the change is close enough to matter
+        if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
 
-        const payload = { type: 'ENTITY_UPDATE', id: entity.id };
-        if (!isGone) {
-            payload.entity = {
-                id: entity.id,
-                name: getItemName(entity),
-                dist: Math.round(entity.position.distanceTo(bot.entity.position)),
-                position: entity.position
-            };
-        }
-        ws.send(JSON.stringify(payload));
+        // Just trigger a re-scan. 
+        // We use 'true' for force to bypass the movement check.
+        sendEnvironment(ENVIRONMENT_RADIUS, true);
     };
+    bot.on('blockUpdate', onBlockUpdate);
 
-    bot.on('entitySpawn', onEntityUpdate);
-    bot.on('entityGone', onEntityUpdate);
-
+    // Ensure world is loaded and entity is initialized before sending initial sync 
+    (async () => {
+        console.log("Cortex linked. Waiting for world data to load...");
+        while (!bot.entity || !bot.entity.position || !bot.blockAt(bot.entity.position)) {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            await bot.waitForTicks(5);
+        }
+        console.log("World ready. Sending initial status and environment.");
+        sendStatus();
+        sendEnvironment(ENVIRONMENT_RADIUS, true);
+    })();
 
     ws.on('close', () => {
         console.log("Cortex disconnected from WebSocket.");
-        // Cleanup listeners to prevent memory leaks and redundant processing
-        bot.removeListener('blockUpdate', onBlockUpdate);
-        bot.removeListener('entitySpawn', onEntityUpdate);
-        bot.removeListener('entityGone', onEntityUpdate);
-        bot.removeListener('health', sendStatus);
-        bot.removeListener('playerCollect', sendStatus);
+
         bot.removeListener('chat', onChat);
-        bot.removeListener('move', sendEnvironment);
-        bot.removeListener('spawn', sendEnvironment);
+        bot.removeListener('blockUpdate', onBlockUpdate);
     });
 
-});
-
-// Resource cleanup on exit
-process.on('SIGTERM', () => {
-    console.log('Stopping actuator...');
-    bot.quit();
-    wss.close();
-    process.exit(0);
 });
