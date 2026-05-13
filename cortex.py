@@ -23,19 +23,17 @@ TOP_K_RECALL = 3
 DUPLICATE_THRESHOLD = 0.85
 
 # --- Data Structures ---
-
 class MentalSlot(Enum):
     """Working-memory categories."""
-    # Cognition. Using prompt-engineering we ask if these should be populated with new entries.
     SELF_CONCEPT = auto()  # Cognitive understanding of who the agent is
-    STRATEGY = auto()      # High-level strategic objectives and vision
+    STRATEGY = auto()      # High-level strategic objectives
     PLAN = auto()          # Flexible short-term planning
 
     # Automatically updated.
     STATUS = auto()        # Current health, hunger, inventory, and minecraft-specific player-status information
     ENVIRONMENT = auto()   # Data structure of surrounding blocks
     SOCIAL = auto()        # Recent chat messages and the player who said them
-    EPISODIC = auto()      # Recent actions.
+    EPISODIC = auto()      # Recent actions and their outcomes (success, failure, info)
 
 @dataclass
 class WorkingMemory:
@@ -139,7 +137,6 @@ class ActionFactory:
         return json.dumps(payload)
 
 # --- Runtime ---
-
 class Cortex:
     def __init__(self, agent_name="Agent", ws_port=8080, actuator_path="bridge.js"):
         self.agent_name = agent_name
@@ -203,17 +200,14 @@ class Cortex:
         max_retries = 10
         for i in range(max_retries):
             try:
-                # Disable ping_interval and ping_timeout for the local connection.
-                # This prevents the brain from disconnecting if the body's event loop 
-                # is temporarily blocked by heavy processing (like recipe searching).
                 self.websocket = await websockets.connect(
                     self.uri, ping_interval=5, ping_timeout=30
                 )
                 print(f"--- {self.agent_name} Cortex Linked to Actuator at {self.uri} ---")
-                return # Connection successful!
+                return
             except (ConnectionRefusedError, OSError):
                 print(f"Actuator not ready, retrying ({i+1}/{max_retries})...")
-                await asyncio.sleep(1) # Wait 1s before trying again
+                await asyncio.sleep(1)
         
         raise Exception("Could not connect to Node.js Actuator after multiple attempts.")
 
@@ -313,7 +307,6 @@ class Cortex:
                                 break
                     self.memory.update_slot(MentalSlot.EPISODIC, f"ERROR: {msg}")
                 self.save_working_memory()
-
         except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
             print(f"[!] Senses disconnected for {self.agent_name}.")
             raise
@@ -493,11 +486,9 @@ You are an autonomous Minecraft agent using Mineflayer. Generate a 'behaviour_sc
 ### CAPABILITIES & GLOBALS:
 - `Vec3` | `new Vec3(x, y, z)`: `.add/minus(v)`, `.scaled(n)`, `.unit()`, `.distanceTo/Squared(v)`, `.floored()`
 - `mcData`: Knowledge base (e.g. `mcData.blocksByName['oak_log'].id`).
-- Available IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_*, iron_ingot, gold_ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-
-Survival: apple, bread, cooked_*, water_bucket.
+- Available IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
 - `GoalNear`: `await bot.pathfinder.goto(new GoalNear(x, y, z, range))`.
-- `bot`: `inventory.items()`, `await equip(item, slot)`, `findBlock({matching, maxDistance})`, `await dig(block)`, `await attack(entity)`, `chat(msg)`, `lookAt(vec)`, `findIds(query)`.
+- `bot`: `inventory.items()`, `await equip(item, slot)`, `findBlock({matching, maxDistance})`, `await dig(block)`, `await attack(entity)`, `chat(msg)`, `lookAt(vec)`, `findIds(_planks)`.
 - `await bot.placeBlockSafe(refBlock, faceVector)`: Places block while avoiding self-collision. Note: referenceBlock must be solid, not air.
 - **Crafting**: 3x3 recipes REQUIRE a `craftingTableBlock`. 
   Example: `const recipe = bot.recipesFor(id, null, 1, table)[0]; if (recipe) await bot.craft(recipe, 1, table);`
@@ -531,7 +522,6 @@ Survival: apple, bread, cooked_*, water_bucket.
         await self.connect()
         
         listener_task = asyncio.create_task(self.listen_to_senses())
-        
         self.thinking_trigger.set()
         
         # Main reasoning loop

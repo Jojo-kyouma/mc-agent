@@ -25,7 +25,6 @@ const bot = mineflayer.createBot({
 bot.loadPlugin(pathfinder);
 
 const wss = new WebSocket.Server({ port: WS_PORT });
-
 let lastScanPos = null;
 let currentAbortController = null;
 
@@ -54,24 +53,22 @@ wss.on('connection', (ws) => {
                 currentAbortController = new AbortController();
                 const { signal } = currentAbortController;
 
+                // --- API for behavior scripts ---
                 bot.recordError = (msg) => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'ERROR', message: msg, description: data.description }));
                     }
                 };
-
                 bot.recordSuccess = () => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
                     }
                 };
-
                 bot.recordInfo = (msg) => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'INFO', message: msg, description: data.description }));
                     }
                 };
-
                 bot.placeBlockSafe = async (referenceBlock, faceVector) => {
                     if (!referenceBlock) {
                         bot.recordError("Cannot place block: referenceBlock is null.");
@@ -95,16 +92,15 @@ wss.on('connection', (ws) => {
                         bot.recordError(`Placement failed: ${e.message}`);
                     }
                 };
-
                 bot.findIds = (query) => {
                     return Object.values(mcData.items)
                         .filter(i => i.name.includes(query))
                         .map(i => i.id);
                 };
 
+                // --- Execute the behavior script ---
                 try {
                     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-
                     const wrappedScript = `
                         try {
                             ${data.behaviour_script}
@@ -114,7 +110,6 @@ wss.on('connection', (ws) => {
                             throw e;
                         }
                     `;
-
                     const execute = new AsyncFunction('bot', 'vec3', 'Vec3', 'mcData', 'GoalNear', 'signal', wrappedScript);
                     const scriptPromise = execute(bot, vec3, vec3, mcData, goals.GoalNear, signal);
                     
@@ -140,12 +135,12 @@ wss.on('connection', (ws) => {
         }
     });
 
+    // --- Event Listeners ---
     bot.on('itemBreak', (item) => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ITEM_BREAK', item: item.name }));
         }
     });
-
     bot.on('entityHurt', (entity) => {
         if (entity === bot.entity && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'AGENT_ATTACKED' }));
@@ -197,8 +192,7 @@ wss.on('connection', (ws) => {
             if (dx <= actualRadius && dz <= actualRadius && dy >= -1 && dy <= 2) return;
         }
 
-        const botPos = currentPos.floored();
-        
+        const botPos = currentPos.floored(); 
         const uniqueBlocks = new Set();
 
         for (let y = -1; y <= 2; y++) {
@@ -213,7 +207,6 @@ wss.on('connection', (ws) => {
         }
 
         lastScanPos = currentPos.clone();
-
         const blockList = [...uniqueBlocks];
 
         ws.send(JSON.stringify({ 
@@ -225,12 +218,7 @@ wss.on('connection', (ws) => {
 
     const onBlockUpdate = (oldBlock, newBlock) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
-        
-        // Check if the change is close enough to matter
         if (newBlock.position.distanceTo(bot.entity.position) > BLOCK_UPDATE_RADIUS) return;
-
-        // Just trigger a re-scan. 
-        // We use 'true' for force to bypass the movement check.
         sendEnvironment(ENVIRONMENT_RADIUS, true);
     };
     bot.on('blockUpdate', onBlockUpdate);
@@ -242,7 +230,6 @@ wss.on('connection', (ws) => {
             if (ws.readyState !== WebSocket.OPEN) return;
             await bot.waitForTicks(5);
         }
-        console.log("World ready. Sending initial status and environment.");
         sendStatus();
         sendEnvironment(ENVIRONMENT_RADIUS, true);
     })();
