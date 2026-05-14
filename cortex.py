@@ -49,7 +49,7 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 10,
+        MentalSlot.SOCIAL: 5,
         MentalSlot.EPISODIC: 15,
         MentalSlot.SELF_CONCEPT: 1,
         MentalSlot.STRATEGY: 1,
@@ -114,16 +114,16 @@ class WorkingMemory:
 @dataclass
 class Record:
     """SQLite Records that function as long-term memory and that Autopilot can use to retrieve relevant actions."""
-    content: Any # The content of the record. Intended mostly for personal memories of the agent worth saving.
-    embedding_description: str # A description of the content spesifically designed for the embedding model to create a good embedding. 
-    embedding: List[float] # The vector used for Cosine Similarity.
+    content: Any
+    embedding_description: str
+    embedding: List[float]
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    id: str = field(default_factory=lambda: str(uuid.uuid4())) # Primary Key for SQLite
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 class MinecraftAction(BaseModel):
     """Helper. Bridge between high-level action concepts and the JavaScript behaviour scripts executed by the Node.js actuator."""
-    description: str = "" # Summary of the behaviour.
-    content: Any = None # The behaviour script to execute.
+    description: str = ""
+    content: Any = None
 
 class ActionFactory:
     """Helper. Translates high-level Action objects into JSON payloads."""
@@ -201,7 +201,7 @@ class Cortex:
         for i in range(max_retries):
             try:
                 self.websocket = await websockets.connect(
-                    self.uri, ping_interval=5, ping_timeout=30
+                    self.uri, ping_interval=20, ping_timeout=60
                 )
                 print(f"--- {self.agent_name} Cortex Linked to Actuator at {self.uri} ---")
                 return
@@ -245,19 +245,17 @@ class Cortex:
                 if not isinstance(data, dict):
                     continue
                 if data.get('type') == 'STATUS':
-                    if "type" in data:
-                        del data["type"]
+                    data.pop('type', None)
                     self.memory.update_slot(MentalSlot.STATUS, data)  
                     if data.get('onFire'):
                         self._handle_priority(4, "Agent is on fire")
                     if data.get('food', 20) < 15:
                         self._handle_priority(2, "Agent is hungry")
-                    if len(data.get('inventory', [])) >= 36:
-                        self._handle_priority(3, "Inventory full")
+                    if data.get('inventoryUsed', 0) >= 36:
+                        self._handle_priority(3, "Inventory is full")
 
                 elif data.get('type') == 'ENVIRONMENT':
-                    if "type" in data:
-                        del data["type"]
+                    data.pop('type', None)
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
 
                 elif data.get('type') == 'INFO':
@@ -275,18 +273,6 @@ class Cortex:
 
                 elif data.get('type') == 'FINISHED':
                     self.thinking_trigger.set()
-
-                elif data.get('type') == 'BLOCK_UPDATE':
-                    pos = data.get('position')
-                    block_data = data.get('block')
-                    env = self.memory.environment
-                    if isinstance(env, dict):
-                        blocks = env.get('blocks', [])
-                        blocks = [b for b in blocks if b.get('position') != pos]
-                        if block_data:
-                            blocks.append(block_data)
-                        env['blocks'] = blocks
-                        self.memory.update_slot(MentalSlot.ENVIRONMENT, env)
 
                 elif data.get('type') == 'CHAT':
                     self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
@@ -357,11 +343,11 @@ class Cortex:
                 print(f"Error clearing WM: {e}")
 
     """ --- Save/Load Long-Term Memory --- """
-    def _find_duplicate_id(self, content: str) -> Optional[str]:
-        """Checks if a similar record exists and returns its ID."""
-        if not content: return None
+    def _find_duplicate_id(self, embedding_key: str) -> Optional[str]:
+        """Checks if a similar record exists for the given search trigger and returns its ID."""
+        if not embedding_key: return None
         
-        new_vec = torch.tensor(self.embedding_model.encode(content))
+        new_vec = torch.tensor(self.embedding_model.encode(embedding_key))
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT id, embedding FROM long_term_memory")
             for rec_id, embedding_blob in cursor:
@@ -371,19 +357,23 @@ class Cortex:
                     return rec_id
         return None
 
-    def save_to_memory(self, content: str):
-        """Save an entry to the long-term memory."""
-        if not content:
+    def save_to_memory(self, memory_data: Optional[Dict[str, str]]):
+        """Save an entry to the long-term memory using an embedding anchor for better recall."""
+        if not memory_data:
+            return
+        
+        content = memory_data.get("to_save")
+        embedding_key = memory_data.get("embedding_key")
+        
+        if not content or not embedding_key:
             return
 
-        dup_id = self._find_duplicate_id(content)
-        
+        dup_id = self._find_duplicate_id(embedding_key)
         record = Record(
             content=content,
-            embedding_description=content,
-            embedding=self.embedding_model.encode(content).tolist()
+            embedding_description=embedding_key,
+            embedding=self.embedding_model.encode(embedding_key).tolist()
         )
-        
         embedding_blob = json.dumps(record.embedding).encode('utf-8')
         with sqlite3.connect(self.db_path) as conn:
             if dup_id:
@@ -415,7 +405,7 @@ class Cortex:
         results.sort(key=lambda x: x[0], reverse=True)
         return [item[1] for item in results[:TOP_K_RECALL]]
 
-    async def think(self) -> tuple[Optional[MinecraftAction], Optional[str], str, Optional[str]]:
+    async def think(self) -> tuple[Optional[MinecraftAction], Optional[str], str, Optional[dict]]:
         """
         High-level reasoning cycle. Uses Gemini to process working memory,
         update internal cognitive states, and return a structured action and raw response.
@@ -441,24 +431,25 @@ class Cortex:
                 raw_json = response.text
                 res_data = json.loads(raw_json)
                 
-                cognition_map = {
-                    "self_concept": MentalSlot.SELF_CONCEPT,
-                    "strategy": MentalSlot.STRATEGY,
-                    "plan": MentalSlot.PLAN
-                }
+                # Update Cognition
+                cognition = res_data.get("cognition", {})
+                self.memory.update_slot(MentalSlot.SELF_CONCEPT, cognition.get("self_concept"))
+                self.memory.update_slot(MentalSlot.STRATEGY, cognition.get("strategy"))
+                self.memory.update_slot(MentalSlot.PLAN, cognition.get("plan"))
                 
-                for key, slot in cognition_map.items():
-                    self.memory.update_slot(slot, res_data.get(key))
+                # Update Memory search state
+                memory_data = res_data.get("memory", {})
+                self.memory.last_recall_query = memory_data.get("recall_query")
                 
                 self.save_working_memory()
-
-                self.memory.last_recall_query = res_data.get("recall_query")
-                memory_to_save = res_data.get("memory_to_save")
                 
-                script = res_data.get("behaviour_script")
-                description = res_data.get("behaviour_description")
+                # Extract behavior
+                behaviour = res_data.get("behaviour", {})
+                script = behaviour.get("script")
+                description = behaviour.get("description")
+                
                 if script:
-                    return (MinecraftAction(description=description, content=script), raw_json, prompt, memory_to_save)
+                    return (MinecraftAction(description=description, content=script), raw_json, prompt, memory_data)
                 break
             except Exception as e:
                 err_str = str(e)
@@ -477,31 +468,44 @@ class Cortex:
 
     def _build_brain_prompt(self, context: str):
         system_instr = """
-You are an autonomous Minecraft agent using Mineflayer. Generate a 'behaviour_script' (JavaScript string) to achieve goals based on the provided Working Memory.
+You are an autonomous Minecraft Agent using a limited set of Mineflayer and related libraries.
 
-### CORE RULES:
-1. **Interruptibility**: Frequently check `if (signal.aborted) return;`.
-2. **Feedback**: Use `bot.recordInfo(message)` to return findings or status updates to your episodic memory.
+### GUIDELINES:
+- **Ambition**: Aim for high-level tasks, e.g. "clear a forest", "build a house", or "excavate a mine". If Working Memory is insufficient, start small and build up.
+- **Resposive**: Frequently use `if (signal.aborted) return;` to make Agent responsive to new priorities.
+- **Feedback**: When you see ERROR in Activity Log, use `bot.recordInfo(message)` to return diagnostic findings to your episodic memory.
+- **Asynchronous**: Use `await` for all interactions with the bot to ensure proper sequencing and responsiveness.
+- **Working Memory Awareness**: Pay especial attention to tags ERROR and INFO in Activity log and information under Environment and Inventory when evaluating outcome of your actions.
+- **Problem Solving**: If you encounter an error, be highly open-minded when trying to solve it, within the API constraints. 
 
-### CAPABILITIES & GLOBALS:
-- `Vec3` | `new Vec3(x, y, z)`: `.add/minus(v)`, `.scaled(n)`, `.unit()`, `.distanceTo/Squared(v)`, `.floored()`
+### SCRIPT INTERFACE REFERENCE:
+  ONLY use the following APIs. Under no circumstances ever should you attempt to use APIs not listed here.
+- `new Vec3(x, y, z)`: `.add/minus(v)`, `.scaled(n)`, `.unit()`, `.distanceTo/Squared(v)`, `.floored()`
 - `mcData`: Knowledge base (e.g. `mcData.blocksByName['oak_log'].id`).
-- Available IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
+- Available IDs: '_log', '_planks', '_pickaxe', '_axe', '_shovel', '_sword', '_door', '_button', '_pressure_plate', 'cooked_', '_ingot', 'diamond', 'coal', 'cobblestone', 'dirt', 'sand', 'gravel', 'flint_and_steel', 'bucket', 'torch', 'crafting_table', 'furnace', 'chest', 'redstone_dust', 'lever', 'piston'. IDs listed in Inventory can also be used.
 - `GoalNear`: `await bot.pathfinder.goto(new GoalNear(x, y, z, range))`.
-- `bot`: `inventory.items()`, `await equip(item, slot)`, `findBlock({matching, maxDistance})`, `await dig(block)`, `await attack(entity)`, `chat(msg)`, `lookAt(vec)`, `findIds(_planks)`.
-- `await bot.placeBlockSafe(refBlock, faceVector)`: Places block while avoiding self-collision. Note: referenceBlock must be solid, not air.
+- `bot`: `inventory.items()`, `await equip(item, slot)`, `findBlock({matching, maxDistance})`, `await attack(entity)`, `chat(msg)`, `lookAt(vec)`, `findIds(_planks)`, `await digSafe(b)`, `await placeBlockSafe(r, f)`, `await activateBlockSafe(b)`.
+- **Block Interaction**: Use `await bot.digSafe(block)`, `await bot.placeBlockSafe(refBlock, faceVector)`, and `await bot.activateBlockSafe(block)`.
 - **Crafting**: 3x3 recipes REQUIRE a `craftingTableBlock`. 
   Example: `const recipe = bot.recipesFor(id, null, 1, table)[0]; if (recipe) await bot.craft(recipe, 1, table);`
-
+- **Interaction Safety**: `bot.digSafe`, `bot.placeBlockSafe`, and `bot.activateBlockSafe` include distance and visibility checks, and automatic look-at. You must be within 4.5 blocks and have a clear line of sight to the target block. If these conditions are not met, an error will be thrown.
+  
 ### RESPONSE FORMAT (JSON):
 {
-  "behaviour_script": "JS code. No literal newlines. Wrap in try { ... } catch(e) { bot.recordError(e.message); throw e; }.",
-  "behaviour_description": "Concise summary.",
-  "memory_to_save": "Important facts to persist in long-term memory (e.g. someone's birthday, location of a village, solution to a problem you solved).",
-  "strategy": "Strategic vision.",
-  "plan": "Step-by-step roadmap. 1. 2. 3. format",
-  "self_concept": "Core persona.",
-  "recall_query": "Memory search term."
+  "behaviour": {
+    "script": "JS code. No literal newlines.",
+    "description": "Detailed description of the script that can be used for debugging."
+  },
+  "cognition": {
+    "self_concept": "Core persona.",
+    "strategy": "Strategic vision.",
+    "plan": "Step-by-step roadmap. 1. 2. 3. format"
+  },
+  "memory": {
+    "to_save": "Important facts or findings to persist in long-term memory. E.g. someone's birthday, location of a village, solution to a problem you solved.",
+    "embedding_key": "A search term (e.g. 'how to fish') that should trigger this memory in the future.",
+    "recall_query": "Search term to use in your LTM search during the NEXT cycle."
+  }
 }
 """
         return f"{system_instr}\nCURRENT WORKING MEMORY:\n{context}\n\nAnalyze status and provide JSON response."
@@ -530,7 +534,7 @@ You are an autonomous Minecraft agent using Mineflayer. Generate a 'behaviour_sc
                 await self.thinking_trigger.wait()
                 self.thinking_trigger.clear()
                 
-                action, raw_json, prompt, memory_to_save = await self.think()
+                action, raw_json, prompt, memory_data = await self.think()
                 
                 if prompt:
                     log_path = os.path.join(self.log_dir, f"{self.agent_name}.txt")
@@ -539,7 +543,7 @@ You are an autonomous Minecraft agent using Mineflayer. Generate a 'behaviour_sc
 
                 if action:
                     await self.send_action(action)
-                    self.save_to_memory(memory_to_save)
+                    self.save_to_memory(memory_data)
 
         try:
             await asyncio.gather(listener_task, reasoning_loop())
@@ -567,3 +571,9 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+"""
+NOTE:
+You can gradually reintroduce Autopilot after understanding the project much better.
+Conscious behaviour is already being witnessed.
+"""
