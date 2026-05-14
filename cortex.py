@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
-TOP_K_RECALL = 3
+TOP_K_RECALL = 1
 DUPLICATE_THRESHOLD = 0.85
 
 # --- Data Structures ---
@@ -49,8 +49,8 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 5,
-        MentalSlot.EPISODIC: 15,
+        MentalSlot.SOCIAL: 4,
+        MentalSlot.EPISODIC: 7,
         MentalSlot.SELF_CONCEPT: 1,
         MentalSlot.STRATEGY: 1,
         MentalSlot.PLAN: 1
@@ -96,7 +96,7 @@ class WorkingMemory:
 
         mappings = [
             ("Strategy", self.strategy),
-            ("Short-Term Step-by-StepPlan", self.plan),
+            ("Short-Term Step-by-Step Plan", self.plan),
             ("Self-Concept", self.self_concept),
             ("Social Dialogue", self.social),
             ("Activity Log (With Feedback)", self.episodic)
@@ -242,8 +242,6 @@ class Cortex:
         try:
             async for message in self.websocket:
                 data = json.loads(message)
-                if not isinstance(data, dict):
-                    continue
                 if data.get('type') == 'STATUS':
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.STATUS, data)  
@@ -263,9 +261,8 @@ class Cortex:
                     self.memory.update_slot(MentalSlot.EPISODIC, f"INFO: {msg}")
 
                 elif data.get('type') == 'SUCCESS':
-                    desc = data.get('description')
                     for i in range(len(self.memory.episodic) - 1, -1, -1):
-                        if f"Attempt: {desc}" in self.memory.episodic[i]:
+                        if "Attempt:" in self.memory.episodic[i]:
                             self.memory.episodic[i] = self.memory.episodic[i].replace("Attempt:", "SUCCESS:", 1)
                             break
                     if self.memory.plan:
@@ -285,13 +282,12 @@ class Cortex:
                     self._handle_priority(4, "Agent is under attack")
 
                 elif data.get('type') == 'ERROR':
-                    desc, msg = data.get('description'), data.get('message')
-                    if desc:
-                        for i in range(len(self.memory.episodic) - 1, -1, -1):
-                            if f"Attempt: {desc}" in self.memory.episodic[i]:
-                                self.memory.episodic[i] = self.memory.episodic[i].replace("Attempt:", "FAILED:", 1)
-                                break
-                    self.memory.update_slot(MentalSlot.EPISODIC, f"ERROR: {msg}")
+                    msg = data.get('message')
+                    for i in range(len(self.memory.episodic) - 1, -1, -1):
+                        if "Attempt:" in self.memory.episodic[i]:
+                            self.memory.episodic[i] = self.memory.episodic[i].replace("Attempt:", f"ERROR ({msg}):", 1)
+                            break
+
                 self.save_working_memory()
         except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
             print(f"[!] Senses disconnected for {self.agent_name}.")
@@ -312,9 +308,6 @@ class Cortex:
             try:
                 with open(self.wm_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    if not isinstance(data, dict):
-                        return
-
                     def as_list(key):
                         val = data.get(key, [])
                         if isinstance(val, list): return val
@@ -468,60 +461,40 @@ class Cortex:
 
     def _build_brain_prompt(self, context: str):
         system_instr = """
-You are an autonomous Minecraft Agent using a limited set of Mineflayer and related libraries.
+Role: Autonomous Minecraft Agent using limited Mineflayer and related APIs.
+Guidelines:
+- Ambition: Aim for high-level tasks (e.g "Build a house", "Excavate a cave", or "Clear a forest"). If ERROR feedback, return to primitive and diagnostic scripts.
+- Responsive: Check `if (signal.aborted) return;` frequently.
+- Feedback: Use `bot.recordInfo(msg)` for ERROR diagnostics.
+- Memory: Monitor SUCCESS/FAILED/INFO tags, Environment, and Physical Status/Inventory to evaluate outcomes. Pay most attention to the most recent entries in the Activity Log.
+- Error Solving: When you notice ERROR tags, immidiately aim for highly open-minded solutions. Stay within API limits.
+- Setup: Write ONLY the code logic. DO NOT define or wrap your code in another function. Your code is executed inside an existing async block; use top-level await directly.
+- Spatial Awareness: Use `eyePosition` for your head/camera location. Coordinates have 2-decimal precision. If LOS fails (e.g. obscured by leaves or another log of the same type), reposition yourself by moving 1-2 blocks to the side or increasing your `GoalNear` range to 2 or 3 to get a better angle.
 
-### GUIDELINES:
-- **Ambition**: Aim for high-level tasks, e.g. "clear a forest", "build a house", or "excavate a mine". If Working Memory is insufficient, start small and build up.
-- **Resposive**: Frequently use `if (signal.aborted) return;` to make Agent responsive to new priorities.
-- **Feedback**: When you see ERROR in Activity Log, use `bot.recordInfo(message)` to return diagnostic findings to your episodic memory.
-- **Asynchronous**: Use `await` for all interactions with the bot to ensure proper sequencing and responsiveness.
-- **Working Memory Awareness**: Pay especial attention to tags ERROR and INFO in Activity log and information under Environment and Inventory when evaluating outcome of your actions.
-- **Problem Solving**: If you encounter an error, be highly open-minded when trying to solve it, within the API constraints. 
+APIs:
+  Under no circumstance whatsoever should you use APIs not listed here.
+- Vec3(x,y,z): .add/minus(v), .scaled(n), .unit(), .distanceTo/Squared(v), .floored()
+- mcData: mcData.blocksByName['id'].id
+- Allowed IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
+- Movement: await bot.pathfinder.goto(new GoalNear(x, y, z, range))
+- bot: inventory.items(), equip(item, slot), findBlock({matching, maxDistance}), attack(entity), chat(msg), lookAt(vec), findIds(query)
+- Block Interaction: MUST use `await bot.digSafe(b)`, `placeBlockSafe(r, f)`, `activateBlockSafe(b)`.
+- Crafting: 3x3 requires table. Example: const r = bot.recipesFor(id, null, 1, table)[0]; if(r) await bot.craft(r, 1, table);
+- Interaction Safety: Safety functions include auto-lookAt. Require range <4.5m and Line-of-Sight (LOS). Failure throws error.
 
-### SCRIPT INTERFACE REFERENCE:
-  ONLY use the following APIs. Under no circumstances ever should you attempt to use APIs not listed here.
-- `new Vec3(x, y, z)`: `.add/minus(v)`, `.scaled(n)`, `.unit()`, `.distanceTo/Squared(v)`, `.floored()`
-- `mcData`: Knowledge base (e.g. `mcData.blocksByName['oak_log'].id`).
-- Available IDs: '_log', '_planks', '_pickaxe', '_axe', '_shovel', '_sword', '_door', '_button', '_pressure_plate', 'cooked_', '_ingot', 'diamond', 'coal', 'cobblestone', 'dirt', 'sand', 'gravel', 'flint_and_steel', 'bucket', 'torch', 'crafting_table', 'furnace', 'chest', 'redstone_dust', 'lever', 'piston'. IDs listed in Inventory can also be used.
-- `GoalNear`: `await bot.pathfinder.goto(new GoalNear(x, y, z, range))`.
-- `bot`: `inventory.items()`, `await equip(item, slot)`, `findBlock({matching, maxDistance})`, `await attack(entity)`, `chat(msg)`, `lookAt(vec)`, `findIds(_planks)`, `await digSafe(b)`, `await placeBlockSafe(r, f)`, `await activateBlockSafe(b)`.
-- **Block Interaction**: Use `await bot.digSafe(block)`, `await bot.placeBlockSafe(refBlock, faceVector)`, and `await bot.activateBlockSafe(block)`.
-- **Crafting**: 3x3 recipes REQUIRE a `craftingTableBlock`. 
-  Example: `const recipe = bot.recipesFor(id, null, 1, table)[0]; if (recipe) await bot.craft(recipe, 1, table);`
-- **Interaction Safety**: `bot.digSafe`, `bot.placeBlockSafe`, and `bot.activateBlockSafe` include distance and visibility checks, and automatic look-at. You must be within 4.5 blocks and have a clear line of sight to the target block. If these conditions are not met, an error will be thrown.
-  
-### RESPONSE FORMAT (JSON):
+JSON Format:
 {
-  "behaviour": {
-    "script": "JS code. No literal newlines.",
-    "description": "Detailed description of the script that can be used for debugging."
-  },
-  "cognition": {
-    "self_concept": "Core persona.",
-    "strategy": "Strategic vision.",
-    "plan": "Step-by-step roadmap. 1. 2. 3. format"
-  },
-  "memory": {
-    "to_save": "Important facts or findings to persist in long-term memory. E.g. someone's birthday, location of a village, solution to a problem you solved.",
-    "embedding_key": "A search term (e.g. 'how to fish') that should trigger this memory in the future.",
-    "recall_query": "Search term to use in your LTM search during the NEXT cycle."
-  }
+  "behaviour": { "script": "JS code (no literal \\n)", "description": "detailed usage of APIs for debugging. Also, short sentence on the behaviour." },
+  "cognition": { "self_concept": "persona", "strategy": "vision", "plan": "1. 2. 3." },
+  "memory": { "to_save": "facts/findings", "embedding_key": "recall key", "recall_query": "next search term" }
 }
 """
         return f"{system_instr}\nCURRENT WORKING MEMORY:\n{context}\n\nAnalyze status and provide JSON response."
 
     async def run(self):
-        """Single cognitive lifecycle for a single agent."""
+        """Starts the actuator and the single cognitive loop for an agent."""
         print(f"[*] Initializing cognitive loop for {self.agent_name}...")
         self._load_working_memory()
-        
-        try:
-            await self.start_cycle()
-        except Exception as e:
-            print(f"[!] {self.agent_name} execution stopped: {e}")
-
-    async def start_cycle(self):
-        """Starts the actuator and cognitive processes."""
         self.start_actuator()
         await self.connect()
         
@@ -531,6 +504,7 @@ You are an autonomous Minecraft Agent using a limited set of Mineflayer and rela
         # Main reasoning loop
         async def reasoning_loop():
             while True:
+                await asyncio.sleep(10)
                 await self.thinking_trigger.wait()
                 self.thinking_trigger.clear()
                 
@@ -547,6 +521,8 @@ You are an autonomous Minecraft Agent using a limited set of Mineflayer and rela
 
         try:
             await asyncio.gather(listener_task, reasoning_loop())
+        except Exception as e:
+            print(f"[!] {self.agent_name} execution stopped: {e}")
         finally:
             listener_task.cancel()
 
@@ -576,4 +552,5 @@ if __name__ == "__main__":
 NOTE:
 You can gradually reintroduce Autopilot after understanding the project much better.
 Conscious behaviour is already being witnessed.
+
 """

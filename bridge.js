@@ -65,13 +65,41 @@ wss.on('connection', (ws) => {
                 // --- Contextual API & Safety Layer ---
                 const validate = (target, action) => {
                     if (!target || !target.position) return;
-                    const dist = bot.entity.position.distanceTo(target.position);
-                    if (dist > 4.5) throw new Error(`${action}: Target too far (${dist.toFixed(1)}m). Move closer.`);
-                    if (action === 'dig' && !bot.canSeeBlock(target)) throw new Error(`${action}: Target not visible. You need a clear line of sight to dig.`);
+                    
+                    const eyePos = bot.entity.position.offset(0, bot.entity.eyeHeight, 0);
+                    const blockCenter = target.position.offset(0.5, 0.5, 0.5);
+                    const dist = eyePos.distanceTo(blockCenter);
+                    if (dist > 4.5) throw new Error(`${action}: Target too far (${dist.toFixed(1)}m). Move closer (max 4.5m).`);
+                    
+                    if (action === 'dig') {
+                        const cursorBlock = bot.blockAtCursor(5.0);
+                        const isVisible = bot.canSeeBlock(target) || (cursorBlock && cursorBlock.position.equals(target.position));
+                        if (!isVisible) {
+                            const obscuredBy = cursorBlock ? cursorBlock.name : 'nothing';
+                            const targetCoords = `${target.position.x}, ${target.position.y}, ${target.position.z}`;
+                            const cursorCoords = cursorBlock ? `${cursorBlock.position.x}, ${cursorBlock.position.y}, ${cursorBlock.position.z}` : 'N/A';
+                            throw new Error(`${action}: LOS failed. Target is ${target.name} at (${targetCoords}), but cursor is pointing at ${obscuredBy} at (${cursorCoords}). Move to get a clear view.`);
+                        }
+                    }
                 };
 
-                bot.digSafe = async (b) => { if (signal.aborted) throw new Error('Script aborted'); await bot.lookAt(b.position.offset(0.5, 0.5, 0.5)); validate(b, 'dig'); return await bot.dig(b); };
-                bot.activateBlockSafe = async (b, ...a) => { if (signal.aborted) throw new Error('Script aborted'); await bot.lookAt(b.position.offset(0.5, 0.5, 0.5)); validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); };
+                const smartLook = async (target) => {
+                    const cursorBlock = bot.blockAtCursor(5.0);
+                    // Only force lookAt center if we aren't already looking at the target
+                    if (!cursorBlock || !cursorBlock.position.equals(target.position)) {
+                        await bot.lookAt(target.position.offset(0.5, 0.5, 0.5));
+                        await bot.waitForTicks(1); // Settle time to ensure raycast accuracy
+                    }
+                };
+
+                bot.digSafe = async (b) => { 
+                    if (signal.aborted) throw new Error('Script aborted'); 
+                    await smartLook(b); validate(b, 'dig'); return await bot.dig(b); 
+                };
+                bot.activateBlockSafe = async (b, ...a) => { 
+                    if (signal.aborted) throw new Error('Script aborted'); 
+                    await smartLook(b); validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
+                };
                 bot.placeBlockSafe = async (ref, face) => {
                     if (signal.aborted) throw new Error('Script aborted');
                     validate(ref, 'placeBlock');
@@ -84,9 +112,9 @@ wss.on('connection', (ws) => {
                     return await bot.placeBlock(ref, face);
                 };
 
-                bot.recordError = (m) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'ERROR', message: m, description: data.description }));
-                bot.recordSuccess = () => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'SUCCESS', description: data.description }));
-                bot.recordInfo = (m) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'INFO', message: m, description: data.description }));
+                bot.recordError = (m) => { throw new Error(m); };
+                bot.recordSuccess = () => {}; 
+                bot.recordInfo = (m) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'INFO', message: m }));
 
                 bot.findIds = (query) => {
                     return Object.values(mcData.items)
@@ -106,6 +134,7 @@ wss.on('connection', (ws) => {
 
                     await Promise.race([scriptPromise, abortPromise]);
 
+                    ws.send(JSON.stringify({ type: 'SUCCESS' }));
                 } catch (scriptErr) {
                     const isAbort = signal.aborted || 
                                     scriptErr.message === 'Script aborted' || 
@@ -113,13 +142,11 @@ wss.on('connection', (ws) => {
                                     scriptErr.message === 'Goal cancelled';
 
                     if (!isAbort) {
-                        console.error(`[Script Error]: ${scriptErr}`);
-                        ws.send(JSON.stringify({ type: 'ERROR', message: scriptErr.message }));
+                        const errorMsg = scriptErr instanceof Error ? scriptErr.message : String(scriptErr);
+                        console.error(`[Script Error]: ${errorMsg}`);
+                        ws.send(JSON.stringify({ type: 'ERROR', message: errorMsg }));
                     }
                 } finally {
-                    delete bot.digSafe;
-                    delete bot.activateBlockSafe;
-                    delete bot.placeBlockSafe;
                     if (!signal.aborted) {
                         ws.send(JSON.stringify({ type: 'FINISHED' }));
                     }
@@ -146,6 +173,7 @@ wss.on('connection', (ws) => {
             acc[item.name] = (acc[item.name] || 0) + item.count;
             return acc;
         }, {});
+        const eyePos = bot.entity.position.offset(0, bot.entity.eyeHeight, 0);
         const status = {
             type: 'STATUS',
             health: Math.round(bot.health),
@@ -155,7 +183,11 @@ wss.on('connection', (ws) => {
             inventoryUsed: bot.inventory.items().length,
             onFire: (bot.entity.metadata[0] & 0x01) !== 0,
             heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
-            position: bot.entity.position.floored()
+            eyePosition: { 
+                x: Number(eyePos.x.toFixed(2)), 
+                y: Number(eyePos.y.toFixed(2)), 
+                z: Number(eyePos.z.toFixed(2)) 
+            }
         };
         ws.send(JSON.stringify(status));
     };
@@ -192,7 +224,6 @@ wss.on('connection', (ws) => {
             syncTimeout = null;
         }, 50);
     };
-
     const performFullScan = async () => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
         
@@ -218,7 +249,6 @@ wss.on('connection', (ws) => {
         }
         syncEnvironment();
     };
-
     bot.on('move', () => {
         if (!bot.entity) return;
         if (lastScanPos) {
@@ -248,7 +278,6 @@ wss.on('connection', (ws) => {
     };
     bot.on('blockUpdate', onBlockUpdate);
 
-    // Efficient Entity Tracking
     const onEntityUpdate = (entity) => {
         if (entity === bot.entity) return;
         const distSq = entity.position.distanceSquared(bot.entity.position);
