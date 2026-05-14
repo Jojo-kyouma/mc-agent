@@ -69,7 +69,7 @@ wss.on('connection', (ws) => {
                     const eyePos = bot.entity.position.offset(0, bot.entity.eyeHeight, 0);
                     const blockCenter = target.position.offset(0.5, 0.5, 0.5);
                     const dist = eyePos.distanceTo(blockCenter);
-                    if (dist > 4.5) throw new Error(`${action}: Target too far (${dist.toFixed(1)}m). Move closer (max 4.5m).`);
+                    if (dist > 4.5) throw new Error(`${action}: Target too far (${dist.toFixed(1)}m).`);
                     
                     if (action === 'dig') {
                         const cursorBlock = bot.blockAtCursor(5.0);
@@ -78,17 +78,16 @@ wss.on('connection', (ws) => {
                             const obscuredBy = cursorBlock ? cursorBlock.name : 'nothing';
                             const targetCoords = `${target.position.x}, ${target.position.y}, ${target.position.z}`;
                             const cursorCoords = cursorBlock ? `${cursorBlock.position.x}, ${cursorBlock.position.y}, ${cursorBlock.position.z}` : 'N/A';
-                            throw new Error(`${action}: LOS failed. Target is ${target.name} at (${targetCoords}), but cursor is pointing at ${obscuredBy} at (${cursorCoords}). Move to get a clear view.`);
+                            throw new Error(`${action}: LOS failed. Target is ${target.name} at (${targetCoords}), but cursor is pointing at ${obscuredBy} at (${cursorCoords}).`);
                         }
                     }
                 };
 
                 const smartLook = async (target) => {
                     const cursorBlock = bot.blockAtCursor(5.0);
-                    // Only force lookAt center if we aren't already looking at the target
                     if (!cursorBlock || !cursorBlock.position.equals(target.position)) {
                         await bot.lookAt(target.position.offset(0.5, 0.5, 0.5));
-                        await bot.waitForTicks(1); // Settle time to ensure raycast accuracy
+                        await bot.waitForTicks(1);
                     }
                 };
 

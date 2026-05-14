@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
-TOP_K_RECALL = 1
+TOP_K_RECALL = 2
 DUPLICATE_THRESHOLD = 0.85
 
 # --- Data Structures ---
@@ -49,8 +49,8 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 4,
-        MentalSlot.EPISODIC: 7,
+        MentalSlot.SOCIAL: 5,
+        MentalSlot.EPISODIC: 15,
         MentalSlot.SELF_CONCEPT: 1,
         MentalSlot.STRATEGY: 1,
         MentalSlot.PLAN: 1
@@ -463,13 +463,13 @@ class Cortex:
         system_instr = """
 Role: Autonomous Minecraft Agent using limited Mineflayer and related APIs.
 Guidelines:
-- Ambition: Aim for high-level tasks (e.g "Build a house", "Excavate a cave", or "Clear a forest"). If ERROR feedback, return to primitive and diagnostic scripts.
+- Ambition: Aim for high-level tasks (e.g "Build a house", "Excavate a cave", or "Clear a forest").
 - Responsive: Check `if (signal.aborted) return;` frequently.
-- Feedback: Use `bot.recordInfo(msg)` for ERROR diagnostics.
-- Memory: Monitor SUCCESS/FAILED/INFO tags, Environment, and Physical Status/Inventory to evaluate outcomes. Pay most attention to the most recent entries in the Activity Log.
-- Error Solving: When you notice ERROR tags, immidiately aim for highly open-minded solutions. Stay within API limits.
+- Feedback: Use `bot.recordInfo(msg)` for INFO diagnostics.
+- Memory: Monitor SUCCESS/ERROR/INFO tags, Environment, and Physical Status/Inventory to evaluate outcomes.
+- Error Solving: When you notice ERROR tags, immidiately aim for highly open-minded solutions. Stay within API limits. If the latest Action Log entry shows SUCCESS, you can relax error-solving and return to ambitious tasks.
 - Setup: Write ONLY the code logic. DO NOT define or wrap your code in another function. Your code is executed inside an existing async block; use top-level await directly.
-- Spatial Awareness: Use `eyePosition` for your head/camera location. Coordinates have 2-decimal precision. If LOS fails (e.g. obscured by leaves or another log of the same type), reposition yourself by moving 1-2 blocks to the side or increasing your `GoalNear` range to 2 or 3 to get a better angle.
+- Spatial Awareness: Use `eyePosition` for your head/camera location. Coordinates have 2-decimal precision. If LOS fails, adjust your gaze with lookAt(vec) or reposition yourself. If that fails, clear the surrounding blocks to gain LOS. If that fails, commence error solving.
 
 APIs:
   Under no circumstance whatsoever should you use APIs not listed here.
@@ -484,7 +484,7 @@ APIs:
 
 JSON Format:
 {
-  "behaviour": { "script": "JS code (no literal \\n)", "description": "detailed usage of APIs for debugging. Also, short sentence on the behaviour." },
+  "behaviour": { "script": "JS code (no literal \\n)", "description": "Detailed usage of APIs. Intended for debugging. End with a summary of the behaviour." },
   "cognition": { "self_concept": "persona", "strategy": "vision", "plan": "1. 2. 3." },
   "memory": { "to_save": "facts/findings", "embedding_key": "recall key", "recall_query": "next search term" }
 }
@@ -548,9 +548,3 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-"""
-NOTE:
-You can gradually reintroduce Autopilot after understanding the project much better.
-Conscious behaviour is already being witnessed.
-
-"""
