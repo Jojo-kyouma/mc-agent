@@ -21,6 +21,7 @@ LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 TOP_K_RECALL = 2
 DUPLICATE_THRESHOLD = 0.85
+PRIORITY_THRESHOLD = 20
 
 # --- Data Structures ---
 class MentalSlot(Enum):
@@ -49,8 +50,8 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.SOCIAL: 5,
-        MentalSlot.EPISODIC: 15,
+        MentalSlot.SOCIAL: 4,
+        MentalSlot.EPISODIC: 7,
         MentalSlot.SELF_CONCEPT: 1,
         MentalSlot.STRATEGY: 1,
         MentalSlot.PLAN: 1
@@ -221,7 +222,7 @@ class Cortex:
     def _handle_priority(self, value: int, reason: str):
         """Increments priority and triggers thinking if threshold is met."""
         self.priority_accumulator += value
-        if self.priority_accumulator >= 4:
+        if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
             self.memory.update_slot(MentalSlot.STRATEGY, f"Interrupted: {reason}")
             self.memory.update_slot(MentalSlot.PLAN, f"Address emergency: {reason}")
@@ -459,27 +460,28 @@ class Cortex:
         system_instr = """
 Role: Autonomous Minecraft Agent using limited Mineflayer and related APIs.
 Guidelines:
-- Ambition: Strive for high-level, complex objectives (e.g., "Build a house", "Excavate a mine", "Clear a forest"). This should be reflected in the behaviour script's code. Build on your previous successes.
-- Memory Awareness: Monitor Environment, Physical Status/Inventory, and SUCCESS/ERROR tags in the Activity Log. Prioritize the feedback from the most recent entries.
-- Error Solving: If you notice an ERROR tag, immediately start problem solving. Use try-catch and call bot.recordError(msg) to terminate with a specific diagnostic finding. Pivot from ambitious to simpler, single-step diagnostic tasks to identify the cause. Return to ambition if recent entry is tagged SUCCESS. Always stay within API limits. 
+- Ambition: Strive for high-level, complex objectives e.g., Clearing a forest by scanning a large area and Loop through each block to dig.
+- Memory Awareness: Monitor Environment, Physical Status/Inventory, and SUCCESS/ERROR tags. Prioritize the feedback from the most recent entries. Evaluate againt intended outcome.
+- Verification: You are responsible for ensuring your goals are met. Within your script, you MUST explicitly verify that the intended outcome was reached (e.g., check inventory counts, or scan the environment for placed blocks). If verification fails, call `bot.recordError(msg)` to fail the script and explain why.
+- Error Solving: If you notice an ERROR tag, IMMIDIATELY PRIORITIZE to pivot to problem solving. Use try-catch blocks within your scripts. Pivot from ambitious to simpler diagnostic tasks until the cause is found. Return to ambition once SUCCESS is regained. Always stay within API limits. 
 - Setup: Write only the code logic. Do not wrap your code in other functions. The system already handles the execution properly. `Await` all asynchronous bot actions.
-- Spatial Awareness: Use `eyePosition` for your head/camera location. Coordinates have 2-decimal precision. If LOS fails, adjust your gaze with `bot.lookAt(vec)` or reposition yourself, or commence error-solving.
-- Chat: Chat usage is limited to personal interactions only.
+- Chat: Chat usage is limited to personal interactions only. Topic of conversation should often pertain to what the meaning of minecraft life is.
+- Interaction: Require range <4.5m and Line-of-Sight (LOS). If LOS fails, adjust your gaze with `bot.lookAt(vec)` or reposition yourself, or commence error-solving.
+- Social: If you meet other players, you should stick together and try to achieve a common goal. If you succeed, start another goal. If you fail, try again or move on.
 
 APIs:
   Under no circumstance whatsoever should you use APIs not listed here.
 - Vec3(x,y,z): .add/minus(v), .scaled(n), .unit(), .distanceTo/Squared(v), .floored()
 - mcData Lookup: `mcData.blocksByName['name'].id` for world/block sensing; `mcData.itemsByName['name'].id` for crafting and inventory items.
 - Allowed IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-- Movement: await bot.pathfinder.goto(new GoalNear(x, y, z, range))
+- Movement: await bot.gotoSafe(new GoalNear(x, y, z, range))
 - bot: inventory.items(), equip(item, slot), findBlock({matching, maxDistance}), attack(entity), chat(msg), lookAt(vec), findIds(query)
 - Block Interaction: MUST use `await bot.digSafe(block)`, `await bot.placeBlockSafe(referenceBlock, faceVector)`, `await bot.activateBlockSafe(block)`.
 - Crafting: `bot.recipesFor` REQUIRES an item ID. Always use `mcData.itemsByName`. Example: const r = bot.recipesFor(mcData.itemsByName['oak_planks'].id, null, 1, table)[0]; if(r) await bot.craft(r, 1, table);
-- Interaction Safety: Safety functions include auto-lookAt. Require range <4.5m and Line-of-Sight (LOS). Failure throws error.
 
 JSON Format:
 {
-  "behaviour": { "script": "JS code (no literal \\n)", "description": "intent" },
+  "behaviour": { "script": "JS code (no literal \\n)", "description": "the intended FINAL outcome of the script" },
   "cognition": { "self_concept": "persona", "strategy": "vision", "plan": "1. 2. 3." },
   "memory": { "to_save": "Facts/findings. Especially important to save SUCCESS solution preceded by ERROR. Otherwise, Personal moments (e.g. "Village is located by the lake at (70, 11, 24)", "Tim has birthday on Nov 1st".)", "embedding_key": "recall key", "recall_query": "next search term" }
 }
@@ -499,6 +501,7 @@ JSON Format:
         # Main reasoning loop
         async def reasoning_loop():
             while True:
+                await asyncio.sleep(10) # Bypass rate-limiting
                 await self.thinking_trigger.wait()
                 self.thinking_trigger.clear()
                 
@@ -545,6 +548,6 @@ if __name__ == "__main__":
 
 """
 TODO: 
-    - Gemini struggles to understand the context. He mines without pickaxe and thinks he is succesful even though there comes no stone in his inventory. It might be caused by SUCCESS messages even though the mission clearly failed. Maybe require him to verify outcome of action?
-    - Gemini repeatedly does low-level tasks like "mine one block" and never the ambitious high-level tasks requested. Do I need to provide example? Tell him to write for-loops?
+    - NOTE: Many instructions in the prompt can be saved to long-term memory and recalled when needed.
+    - It seems that we need to create a gotoSafe() function to deal with the bot colliding, getting stuck, and not trying to get loose, just being stuck indefinately.
 """

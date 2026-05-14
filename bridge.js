@@ -13,13 +13,18 @@ const MC_VERSION = '1.20.1';
 const WS_PORT = parseInt(process.argv[2]) || 8080;
 const BOT_USERNAME = process.argv[3] || 'Agent';
 
-const ENVIRONMENT_RADIUS = 10; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
+const ENVIRONMENT_RADIUS = 20; // Radius for the horizontal scan (e.g., 2 creates a 5x5 area)
 const BLOCK_UPDATE_RADIUS = ENVIRONMENT_RADIUS + 4; // Interaction distance (Bot can reach blocks ~4 blocks away)
 
 const AIR_BLOCKS = new Set(['air', 'cave_air', 'void_air']);
 
 const getItemName = (entity) => {
     if (entity.type === 'player') return entity.username;
+    if (entity.name === 'item' && entity.metadata && entity.metadata[8]) {
+        const itemMetadata = entity.metadata[8];
+        const item = mcData.items[itemMetadata.itemId];
+        if (item) return `dropped_${item.name}`;
+    }
     if (entity.name) return entity.name;
     return entity.type;
 };
@@ -93,13 +98,43 @@ wss.on('connection', (ws) => {
                     if (signal.aborted) throw new Error('Script aborted'); 
                     validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
                 };
+                bot.gotoSafe = async (goal) => {
+                    if (signal.aborted) throw new Error('Script aborted');
+                    if (!bot.entity) throw new Error('gotoSafe: Bot entity not found');
+                    let lastPos = bot.entity.position.clone();
+                    let lastMoveTime = Date.now();
+                    const interval = setInterval(() => {
+                        if (!bot.entity) return;
+                        if (bot.entity.position.distanceTo(lastPos) > 0.3) {
+                            lastPos = bot.entity.position.clone();
+                            lastMoveTime = Date.now();
+                        }
+                    }, 500);
+                    try {
+                        const p = bot.pathfinder.goto(goal);
+                        // Prevent terminal process crash on pathfinder cancellations/watchdog trigger
+                        p.catch(() => {}); 
+                        const watchdog = new Promise((_, reject) => {
+                            const t = setInterval(() => {
+                                if (signal.aborted) { clearInterval(t); return; }
+                                if (Date.now() - lastMoveTime > 3500) {
+                                    clearInterval(t);
+                                    bot.pathfinder.setGoal(null);
+                                    reject(new Error('Movement stuck: Progress stalled for 3.5s. The bot may be trapped or obstructed.'));
+                                }
+                            }, 500);
+                            p.finally(() => clearInterval(t));
+                        });
+                        await Promise.race([p, watchdog]);
+                    } finally { clearInterval(interval); }
+                };
                 bot.placeBlockSafe = async (ref, face) => {
                     if (signal.aborted) throw new Error('Script aborted');
                     validate(ref, 'placeBlock');
                     const targetPos = ref.position.add(face);
                     if (bot.entity.position.distanceSquared(targetPos) < 2.25) {
                         const away = bot.entity.position.offset(-1, 0, 1);
-                        await bot.pathfinder.goto(new goals.GoalNear(away.x, away.y, away.z, 1));
+                        await bot.gotoSafe(new goals.GoalNear(away.x, away.y, away.z, 1));
                     }
                     await rawPlaceBlock(bot, ref, face);
                     await bot.waitForTicks(2);
