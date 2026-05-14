@@ -169,6 +169,7 @@ class Cortex:
             print("[!] Warning: GOOGLE_API_KEY not found in environment variables.")   
         self.client = genai.Client(api_key=api_key)
 
+    # Setup and Connection
     def _init_db(self):
         """Initializes the SQLite database for long-term storage."""
         with sqlite3.connect(self.db_path) as conn:
@@ -242,6 +243,8 @@ class Cortex:
         try:
             async for message in self.websocket:
                 data = json.loads(message)
+
+                # Status and Environment
                 if data.get('type') == 'STATUS':
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.STATUS, data)  
@@ -251,15 +254,22 @@ class Cortex:
                         self._handle_priority(2, "Agent is hungry")
                     if data.get('inventoryUsed', 0) >= 36:
                         self._handle_priority(3, "Inventory is full")
-
                 elif data.get('type') == 'ENVIRONMENT':
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
 
-                elif data.get('type') == 'INFO':
-                    msg = data.get('message')
-                    self.memory.update_slot(MentalSlot.EPISODIC, f"INFO: {msg}")
+                # Re-prioritization
+                elif data.get('type') == 'CHAT':
+                    self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
+                    self._handle_priority(1, "New chat message")
+                elif data.get('type') == 'ITEM_BREAK':
+                    self._handle_priority(2, f"Tool broken: {data.get('item')}")
+                elif data.get('type') == 'AGENT_ATTACKED':
+                    self._handle_priority(4, "Agent is under attack")
 
+                # Lifecycle
+                elif data.get('type') == 'FINISHED':
+                    self.thinking_trigger.set()
                 elif data.get('type') == 'SUCCESS':
                     for i in range(len(self.memory.episodic) - 1, -1, -1):
                         if "Attempt:" in self.memory.episodic[i]:
@@ -267,20 +277,6 @@ class Cortex:
                             break
                     if self.memory.plan:
                         self.memory.plan.pop()
-
-                elif data.get('type') == 'FINISHED':
-                    self.thinking_trigger.set()
-
-                elif data.get('type') == 'CHAT':
-                    self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
-                    self._handle_priority(1, "New chat message")
-
-                elif data.get('type') == 'ITEM_BREAK':
-                    self._handle_priority(2, f"Tool broken: {data.get('item')}")
-
-                elif data.get('type') == 'AGENT_ATTACKED':
-                    self._handle_priority(4, "Agent is under attack")
-
                 elif data.get('type') == 'ERROR':
                     msg = data.get('message')
                     for i in range(len(self.memory.episodic) - 1, -1, -1):
@@ -463,30 +459,29 @@ class Cortex:
         system_instr = """
 Role: Autonomous Minecraft Agent using limited Mineflayer and related APIs.
 Guidelines:
-- Ambition: Aim for high-level tasks (e.g "Build a house", "Excavate a cave", or "Clear a forest").
-- Responsive: Check `if (signal.aborted) return;` frequently.
-- Feedback: Use `bot.recordInfo(msg)` for INFO diagnostics.
-- Memory: Monitor SUCCESS/ERROR/INFO tags, Environment, and Physical Status/Inventory to evaluate outcomes.
-- Error Solving: When you notice ERROR tags, immidiately aim for highly open-minded solutions. Stay within API limits. If the latest Action Log entry shows SUCCESS, you can relax error-solving and return to ambitious tasks.
-- Setup: Write ONLY the code logic. DO NOT define or wrap your code in another function. Your code is executed inside an existing async block; use top-level await directly.
-- Spatial Awareness: Use `eyePosition` for your head/camera location. Coordinates have 2-decimal precision. If LOS fails, adjust your gaze with lookAt(vec) or reposition yourself. If that fails, clear the surrounding blocks to gain LOS. If that fails, commence error solving.
+- Ambition: Strive for high-level, complex objectives (e.g., "Build a house", "Excavate a mine", "Clear a forest"). This should be reflected in the behaviour script's code. Build on your previous successes.
+- Memory Awareness: Monitor Environment, Physical Status/Inventory, and SUCCESS/ERROR tags in the Activity Log. Prioritize the feedback from the most recent entries.
+- Error Solving: If you notice an ERROR tag, immediately start problem solving. Use try-catch and call bot.recordError(msg) to terminate with a specific diagnostic finding. Pivot from ambitious to simpler, single-step diagnostic tasks to identify the cause. Return to ambition if recent entry is tagged SUCCESS. Always stay within API limits. 
+- Setup: Write only the code logic. Do not wrap your code in other functions. The system already handles the execution properly. `Await` all asynchronous bot actions.
+- Spatial Awareness: Use `eyePosition` for your head/camera location. Coordinates have 2-decimal precision. If LOS fails, adjust your gaze with `bot.lookAt(vec)` or reposition yourself, or commence error-solving.
+- Chat: Chat usage is limited to personal interactions only.
 
 APIs:
   Under no circumstance whatsoever should you use APIs not listed here.
 - Vec3(x,y,z): .add/minus(v), .scaled(n), .unit(), .distanceTo/Squared(v), .floored()
-- mcData: mcData.blocksByName['id'].id
+- mcData Lookup: `mcData.blocksByName['name'].id` for world/block sensing; `mcData.itemsByName['name'].id` for crafting and inventory items.
 - Allowed IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
 - Movement: await bot.pathfinder.goto(new GoalNear(x, y, z, range))
 - bot: inventory.items(), equip(item, slot), findBlock({matching, maxDistance}), attack(entity), chat(msg), lookAt(vec), findIds(query)
-- Block Interaction: MUST use `await bot.digSafe(b)`, `placeBlockSafe(r, f)`, `activateBlockSafe(b)`.
-- Crafting: 3x3 requires table. Example: const r = bot.recipesFor(id, null, 1, table)[0]; if(r) await bot.craft(r, 1, table);
+- Block Interaction: MUST use `await bot.digSafe(block)`, `await bot.placeBlockSafe(referenceBlock, faceVector)`, `await bot.activateBlockSafe(block)`.
+- Crafting: `bot.recipesFor` REQUIRES an item ID. Always use `mcData.itemsByName`. Example: const r = bot.recipesFor(mcData.itemsByName['oak_planks'].id, null, 1, table)[0]; if(r) await bot.craft(r, 1, table);
 - Interaction Safety: Safety functions include auto-lookAt. Require range <4.5m and Line-of-Sight (LOS). Failure throws error.
 
 JSON Format:
 {
-  "behaviour": { "script": "JS code (no literal \\n)", "description": "Detailed usage of APIs. Intended for debugging. End with a summary of the behaviour." },
+  "behaviour": { "script": "JS code (no literal \\n)", "description": "intent" },
   "cognition": { "self_concept": "persona", "strategy": "vision", "plan": "1. 2. 3." },
-  "memory": { "to_save": "facts/findings", "embedding_key": "recall key", "recall_query": "next search term" }
+  "memory": { "to_save": "Facts/findings. Especially important to save SUCCESS solution preceded by ERROR. Otherwise, Personal moments (e.g. "Village is located by the lake at (70, 11, 24)", "Tim has birthday on Nov 1st".)", "embedding_key": "recall key", "recall_query": "next search term" }
 }
 """
         return f"{system_instr}\nCURRENT WORKING MEMORY:\n{context}\n\nAnalyze status and provide JSON response."
@@ -504,12 +499,12 @@ JSON Format:
         # Main reasoning loop
         async def reasoning_loop():
             while True:
-                await asyncio.sleep(10)
                 await self.thinking_trigger.wait()
                 self.thinking_trigger.clear()
                 
                 action, raw_json, prompt, memory_data = await self.think()
                 
+                # Logging for analysis and debugging
                 if prompt:
                     log_path = os.path.join(self.log_dir, f"{self.agent_name}.txt")
                     with open(log_path, "a", encoding="utf-8") as f:
@@ -548,3 +543,8 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
+"""
+TODO: 
+    - Gemini struggles to understand the context. He mines without pickaxe and thinks he is succesful even though there comes no stone in his inventory. It might be caused by SUCCESS messages even though the mission clearly failed. Maybe require him to verify outcome of action?
+    - Gemini repeatedly does low-level tasks like "mine one block" and never the ambitious high-level tasks requested. Do I need to provide example? Tell him to write for-loops?
+"""

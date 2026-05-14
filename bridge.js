@@ -3,9 +3,10 @@ const mcData = require('minecraft-data')('1.20.1');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const WebSocket = require('ws');
 const Vec3 = require('vec3');
+const { rawPlaceBlock } = require('./mc-utils.js');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 51674; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 61285; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -49,20 +50,22 @@ wss.on('connection', (ws) => {
             bot.stopDigging();
         }
     };
-
+    let numTries = 0;
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
             if (data.type === 'ABORT') {
                 abortCurrentScript();
             } else if (data.type === 'ACTION' && data.behaviour_script) {
-                console.log(`[*] Executing: ${data.description}`);
-                
+                console.log(`\n[*] ACT ${numTries}: ${data.description}`);
+                console.log(`[*] SCRIPT:\n${data.behaviour_script.replaceAll(';', ';\n')}`);
+                numTries++;
+
                 abortCurrentScript();
                 currentAbortController = new AbortController();
                 const { signal } = currentAbortController;
 
-                // --- Contextual API & Safety Layer ---
+                // --- Action API & Safety Layer ---
                 const validate = (target, action) => {
                     if (!target || !target.position) return;
                     
@@ -82,22 +85,13 @@ wss.on('connection', (ws) => {
                         }
                     }
                 };
-
-                const smartLook = async (target) => {
-                    const cursorBlock = bot.blockAtCursor(5.0);
-                    if (!cursorBlock || !cursorBlock.position.equals(target.position)) {
-                        await bot.lookAt(target.position.offset(0.5, 0.5, 0.5));
-                        await bot.waitForTicks(1);
-                    }
-                };
-
                 bot.digSafe = async (b) => { 
                     if (signal.aborted) throw new Error('Script aborted'); 
-                    await smartLook(b); validate(b, 'dig'); return await bot.dig(b); 
+                    validate(b, 'dig'); return await bot.dig(b); 
                 };
                 bot.activateBlockSafe = async (b, ...a) => { 
                     if (signal.aborted) throw new Error('Script aborted'); 
-                    await smartLook(b); validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
+                    validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
                 };
                 bot.placeBlockSafe = async (ref, face) => {
                     if (signal.aborted) throw new Error('Script aborted');
@@ -107,25 +101,43 @@ wss.on('connection', (ws) => {
                         const away = bot.entity.position.offset(-1, 0, 1);
                         await bot.pathfinder.goto(new goals.GoalNear(away.x, away.y, away.z, 1));
                     }
-                    if (signal.aborted) throw new Error('Script aborted');
-                    return await bot.placeBlock(ref, face);
+                    await rawPlaceBlock(bot, ref, face);
+                    await bot.waitForTicks(2);
+
+                    const placedBlock = bot.blockAt(targetPos);
+                    if (!placedBlock || AIR_BLOCKS.has(placedBlock.name)) {
+                        throw new Error(`placeBlock: Verification failed. Target position ${targetPos} is still ${placedBlock ? placedBlock.name : 'empty'}.`);
+                    }
                 };
-
-                bot.recordError = (m) => { throw new Error(m); };
-                bot.recordSuccess = () => {}; 
-                bot.recordInfo = (m) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'INFO', message: m }));
-
                 bot.findIds = (query) => {
                     return Object.values(mcData.items)
                         .filter(i => i.name.includes(query))
                         .map(i => i.id);
                 };
-
+                bot.recordError = (m) => { throw new Error(m); };
+                bot.recordSuccess = () => {};
                 // --- Execute the behavior script ---
                 try {
-                    const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-                    const execute = new AsyncFunction('bot', 'Vec3', 'mcData', 'GoalNear', 'signal', data.behaviour_script);
-                    const scriptPromise = execute(bot, Vec3, mcData, goals.GoalNear, signal);
+                    const handler = {
+                        get(target, prop) {
+                            const val = Reflect.get(target, prop);
+                            if (typeof val === 'function') {
+                                return (...args) => {
+                                    if (signal.aborted) throw new Error('Script aborted');
+                                    return val.apply(target, args);
+                                };
+                            }
+                            if (val && typeof val === 'object' && prop !== 'inventory' && prop !== 'entities') {
+                                return new Proxy(val, handler);
+                            }
+                            return val;
+                        }
+                    };
+                    const botProxy = new Proxy(bot, handler);
+
+                    const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
+                    const execute = new AsyncFunction('bot', 'Vec3', 'mcData', 'GoalNear', data.behaviour_script);
+                    const scriptPromise = execute(botProxy, Vec3, mcData, goals.GoalNear);
                     
                     const abortPromise = new Promise((resolve, reject) => {
                         signal.addEventListener('abort', () => reject(new Error('Script aborted')), { once: true });
@@ -142,7 +154,7 @@ wss.on('connection', (ws) => {
 
                     if (!isAbort) {
                         const errorMsg = scriptErr instanceof Error ? scriptErr.message : String(scriptErr);
-                        console.error(`[Script Error]: ${errorMsg}`);
+                        console.error(`[ERROR]: ${errorMsg}`);
                         ws.send(JSON.stringify({ type: 'ERROR', message: errorMsg }));
                     }
                 } finally {
@@ -190,7 +202,6 @@ wss.on('connection', (ws) => {
         };
         ws.send(JSON.stringify(status));
     };
-
     bot.on('health', sendStatus);
     bot.on('updateSlot', sendStatus);
 
@@ -256,7 +267,6 @@ wss.on('connection', (ws) => {
         }
         performFullScan();
     });
-
     const onBlockUpdate = (oldBlock, newBlock) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
         const dist = newBlock.position.distanceTo(bot.entity.position);
@@ -301,7 +311,6 @@ wss.on('connection', (ws) => {
 
     ws.on('close', () => {
         console.log("Cortex disconnected from WebSocket.");
-
         bot.removeListener('chat', onChat);
         bot.removeListener('blockUpdate', onBlockUpdate);
         bot.removeListener('health', sendStatus);
@@ -310,5 +319,4 @@ wss.on('connection', (ws) => {
         bot.removeListener('entityGone', onEntityUpdate);
         bot.removeListener('entityMoved', onEntityUpdate);
     });
-
 });
