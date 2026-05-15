@@ -6,7 +6,7 @@ const Vec3 = require('vec3');
 const { rawPlaceBlock } = require('./mc-utils.js');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 61285; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 53279; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -92,31 +92,38 @@ wss.on('connection', (ws) => {
                     }
                 };
                 bot.digSafe = async (b) => { 
-                    if (signal.aborted) throw new Error('Script aborted'); 
                     validate(b, 'dig'); return await bot.dig(b); 
                 };
                 bot.activateBlockSafe = async (b, ...a) => { 
-                    if (signal.aborted) throw new Error('Script aborted'); 
                     validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
+                };
+                bot.craftSafe = async (recipe, count, b) => {
+                    if (!recipe) throw new Error('craftSafe: No recipe provided. Check if you have enough materials.');
+                    validate(b, 'craft');
+                    const resultId = recipe.result.id;
+                    const oldAmount = bot.inventory.count(resultId);
+
+                    await bot.craft(recipe, count, b);
+                    
+                    const newAmount = bot.inventory.count(resultId);
+                    if (newAmount <= oldAmount) {
+                        throw new Error(`craftSafe: Verification failed. Inventory count for item ID ${resultId} did not increase.`);
+                    }
                 };
                 bot.gotoSafe = async (goal) => {
                     let lastPos = bot.entity.position.clone();
                     let lastMoveTime = Date.now();
                     let finished = false;
-
                     const moveTask = bot.pathfinder.goto(goal).catch(() => {});
                     moveTask.finally(() => { finished = true; });
 
                     while (!finished) {
                         await sleep(500);
-                        
                         if (signal?.aborted) {
                             bot.pathfinder.setGoal(null);
                             throw new Error('Script aborted');
                         }
-
                         const distanceMoved = bot.entity.position.distanceTo(lastPos);
-
                         if (distanceMoved > 0.3) {
                             lastPos = bot.entity.position.clone();
                             lastMoveTime = Date.now();
@@ -128,7 +135,6 @@ wss.on('connection', (ws) => {
                     return await moveTask;
                 };
                 bot.placeBlockSafe = async (ref, face) => {
-                    if (signal.aborted) throw new Error('Script aborted');
                     validate(ref, 'placeBlock');
                     const targetPos = ref.position.add(face);
                     if (bot.entity.position.distanceSquared(targetPos) < 2.25) {
@@ -150,6 +156,7 @@ wss.on('connection', (ws) => {
                 };
                 bot.recordError = (m) => { throw new Error(m); };
                 bot.recordSuccess = () => {};
+
                 // --- Execute the behavior script ---
                 try {
                     const handler = {

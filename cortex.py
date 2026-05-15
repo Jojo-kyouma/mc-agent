@@ -21,16 +21,12 @@ LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 TOP_K_RECALL = 2
 DUPLICATE_THRESHOLD = 0.85
-PRIORITY_THRESHOLD = 20
+PRIORITY_THRESHOLD = 4
 
 # --- Data Structures ---
 class MentalSlot(Enum):
     """Working-memory categories."""
-    SELF_CONCEPT = auto()  # Cognitive understanding of who the agent is
-    STRATEGY = auto()      # High-level strategic objectives
-    PLAN = auto()          # Flexible short-term planning
-
-    # Automatically updated.
+    KNOWLEDGE = auto()     # Stable holder for critical info/learned patterns
     STATUS = auto()        # Current health, hunger, inventory, and minecraft-specific player-status information
     ENVIRONMENT = auto()   # Data structure of surrounding blocks
     SOCIAL = auto()        # Recent chat messages and the player who said them
@@ -43,18 +39,14 @@ class WorkingMemory:
     environment: Dict[str, Any] = field(default_factory=dict)
     social: List[str] = field(default_factory=list)
     episodic: List[str] = field(default_factory=list)
-    self_concept: List[str] = field(default_factory=list)
-    strategy: List[str] = field(default_factory=list)
-    plan: List[str] = field(default_factory=list)
+    knowledge: List[str] = field(default_factory=list)
     recalled_memories: List[str] = field(default_factory=list)
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
+        MentalSlot.KNOWLEDGE: 5,
         MentalSlot.SOCIAL: 4,
-        MentalSlot.EPISODIC: 7,
-        MentalSlot.SELF_CONCEPT: 1,
-        MentalSlot.STRATEGY: 1,
-        MentalSlot.PLAN: 1
+        MentalSlot.EPISODIC: 7
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
@@ -71,17 +63,18 @@ class WorkingMemory:
             return
 
         attr_map = {
-            MentalSlot.SELF_CONCEPT: "self_concept",
+            MentalSlot.KNOWLEDGE: "knowledge",
             MentalSlot.SOCIAL: "social",
             MentalSlot.EPISODIC: "episodic",
-            MentalSlot.STRATEGY: "strategy",
-            MentalSlot.PLAN: "plan"
         }
 
         attr_name = attr_map.get(slot)
         if attr_name:
             target_list = getattr(self, attr_name)
             val_str = str(data)
+
+            if slot == MentalSlot.KNOWLEDGE and val_str in target_list:
+                return
 
             target_list.append(val_str)
             limit = self.SLOT_LIMITS.get(slot, 20)
@@ -96,9 +89,7 @@ class WorkingMemory:
         ]
 
         mappings = [
-            ("Strategy", self.strategy),
-            ("Short-Term Step-by-Step Plan", self.plan),
-            ("Self-Concept", self.self_concept),
+            ("Internal Knowledge (Stable)", self.knowledge),
             ("Social Dialogue", self.social),
             ("Activity Log (With Feedback)", self.episodic)
         ]
@@ -224,8 +215,7 @@ class Cortex:
         self.priority_accumulator += value
         if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
-            self.memory.update_slot(MentalSlot.STRATEGY, f"Interrupted: {reason}")
-            self.memory.update_slot(MentalSlot.PLAN, f"Address emergency: {reason}")
+            self.memory.update_slot(MentalSlot.EPISODIC, f"INTERRUPT: {reason}")
             self.priority_accumulator = 0
             asyncio.create_task(self.send_abort())
             self.thinking_trigger.set()
@@ -276,8 +266,6 @@ class Cortex:
                         if "Attempt:" in self.memory.episodic[i]:
                             self.memory.episodic[i] = self.memory.episodic[i].replace("Attempt:", "SUCCESS:", 1)
                             break
-                    if self.memory.plan:
-                        self.memory.plan.pop()
                 elif data.get('type') == 'ERROR':
                     msg = data.get('message')
                     for i in range(len(self.memory.episodic) - 1, -1, -1):
@@ -314,9 +302,7 @@ class Cortex:
                     self.memory.environment = data.get("environment", {})
                     self.memory.social = as_list("social")
                     self.memory.episodic = as_list("episodic")
-                    self.memory.self_concept = as_list("self_concept")
-                    self.memory.strategy = as_list("strategy")
-                    self.memory.plan = as_list("plan")
+                    self.memory.knowledge = as_list("knowledge")
                     self.memory.recalled_memories = as_list("recalled_memories")
                     self.memory.last_recall_query = data.get("last_recall_query")
                 print(f"[*] Loaded working memory for {self.agent_name}")
@@ -421,11 +407,11 @@ class Cortex:
                 raw_json = response.text
                 res_data = json.loads(raw_json)
                 
-                # Update Cognition
-                cognition = res_data.get("cognition", {})
-                self.memory.update_slot(MentalSlot.SELF_CONCEPT, cognition.get("self_concept"))
-                self.memory.update_slot(MentalSlot.STRATEGY, cognition.get("strategy"))
-                self.memory.update_slot(MentalSlot.PLAN, cognition.get("plan"))
+                # Update Knowledge (Stable Buffer)
+                new_k = res_data.get("knowledge")
+                if new_k and isinstance(new_k, str):
+                    if new_k in self.memory.recalled_memories:
+                        self.memory.update_slot(MentalSlot.KNOWLEDGE, new_k)
                 
                 # Update Memory search state
                 memory_data = res_data.get("memory", {})
@@ -457,35 +443,35 @@ class Cortex:
         return None, None, prompt, None
 
     def _build_brain_prompt(self, context: str):
-        system_instr = """
-Role: Autonomous Minecraft Agent using limited Mineflayer and related APIs.
-Guidelines:
-- Ambition: Strive for high-level, complex objectives e.g., Clearing a forest by scanning a large area and Loop through each block to dig.
-- Memory Awareness: Monitor Environment, Physical Status/Inventory, and SUCCESS/ERROR tags. Prioritize the feedback from the most recent entries. Evaluate againt intended outcome.
-- Verification: You are responsible for ensuring your goals are met. Within your script, you MUST explicitly verify that the intended outcome was reached (e.g., check inventory counts, or scan the environment for placed blocks). If verification fails, call `bot.recordError(msg)` to fail the script and explain why.
-- Error Solving: If you notice an ERROR tag, IMMIDIATELY PRIORITIZE to pivot to problem solving. Use try-catch blocks within your scripts. Pivot from ambitious to simpler diagnostic tasks until the cause is found. Return to ambition once SUCCESS is regained. Always stay within API limits. 
-- Setup: Write only the code logic. Do not wrap your code in other functions. The system already handles the execution properly. `Await` all asynchronous bot actions.
-- Interaction: Require range <4.5m and Line-of-Sight (LOS). If LOS fails, adjust your gaze with `bot.lookAt(vec)` or reposition yourself, or commence error-solving.
-- Social: If you meet other players, you should stick together and try to achieve a common goal. If you succeed, start another goal. If you fail, try again or move on.
+        system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
+Rules:
+- Goals: Pursue complex, looped objectives.
+- Growth: Build on prior SUCCESSes. Discover efficient strategies. Aggressively pursue new goals.
+- Verification: Mandatory outcome checks (e.g., count items/blocks). Call `bot.recordError(msg)` to catch failure.
+- Errors: On ERROR, use try-catch and pivot to simple diagnostics. Resume ambition after SUCCESS.
+- Syntax: Logic only. No function wrappers. `Await` all async actions. Mandatory `try-catch` for block interactions.
+- Interaction: Range <4.5m + LOS. Adjust via `bot.lookAt(vec)` or movement if LOS fails. Or commence error-solving.
+- Social: Prioritize cooperation. Persist or pivot on failure.
 
-APIs:
-  Under no circumstance whatsoever should you use APIs not listed here.
-- Vec3(x,y,z): .add/minus(v), .scaled(n), .unit(), .distanceTo/Squared(v), .floored()
-- mcData Lookup: `mcData.blocksByName['name'].id` for world/block sensing; `mcData.itemsByName['name'].id` for crafting and inventory items.
-- Allowed IDs: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-- Movement: await bot.gotoSafe(new GoalNear(x, y, z, range))
-- bot: inventory.items(), equip(item, slot), findBlock({matching, maxDistance}), attack(entity), chat(msg), lookAt(vec), findIds(query)
-- Block Interaction: MUST use `await bot.digSafe(block)`, `await bot.placeBlockSafe(referenceBlock, faceVector)`, `await bot.activateBlockSafe(block)`.
-- Crafting: `bot.recipesFor` REQUIRES an item ID. Always use `mcData.itemsByName`. Example: const r = bot.recipesFor(mcData.itemsByName['oak_planks'].id, null, 1, table)[0]; if(r) await bot.craft(r, 1, table);
+APIs (STRICT LIMIT):
+- Vec3: .add/minus/scaled/unit/distanceTo/floored.
+- mcData: `mcData.blocksByName['name'].id` or `mcData.itemsByName['name'].id`.
+- Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
+- Actions: `await bot.gotoSafe(new GoalNear(x,y,z,range))`, inventory.items(), equip, findBlock, attack, chat, lookAt, findIds.
+- Safe Methods: MUST use `await bot.digSafe(b)`, `placeBlockSafe(ref, face)`, `activateBlockSafe(b)`, `craftSafe(recipe, count, table)`.
+- Crafting: `bot.recipesFor(ID, ...)` (Requires ID). Example: `const r = bot.recipesFor(mcData.itemsByName['oak_planks'].id, null, 1, table)[0];`
 
 JSON Format:
 {
-  "behaviour": { "script": "JS code (no literal \\n)", "description": "the intended FINAL outcome of the script" },
-  "cognition": { "self_concept": "persona", "strategy": "vision", "plan": "1. 2. 3." },
-  "memory": { "to_save": "Facts/findings. Especially important to save SUCCESS solution preceded by ERROR. Otherwise, Personal moments (e.g. "Village is located by the lake at (70, 11, 24)", "Tim has birthday on Nov 1st".)", "embedding_key": "recall key", "recall_query": "next search term" }
-}
-"""
-        return f"{system_instr}\nCURRENT WORKING MEMORY:\n{context}\n\nAnalyze status and provide JSON response."
+  "behaviour": { "script": "JS (no literal \\n)", "description": "outcome" },
+  "knowledge": "string", // OPTIONAL. Single entry to persist. MUST be an EXACT copy from RECALLED MEMORIES. Do NOT add to it if INTERNAL KNOWLEDGE is sufficient.
+  "memory": { 
+    "to_save": "Fact, SUCCESS fix for ERROR, or event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st".)", 
+    "embedding_key": "recall key", 
+    "recall_query": "next search term" 
+  }
+}"""
+        return f"{system_instr}\nWORKING MEMORY:\n{context}\n\nAnalyze and provide JSON response."
 
     async def run(self):
         """Starts the actuator and the single cognitive loop for an agent."""
@@ -500,7 +486,7 @@ JSON Format:
         # Main reasoning loop
         async def reasoning_loop():
             while True:
-                await asyncio.sleep(10) # Bypass rate-limiting
+                await asyncio.sleep(5) # Bypass rate-limiting (optimized for 1 agent)
                 await self.thinking_trigger.wait()
                 self.thinking_trigger.clear()
                 
