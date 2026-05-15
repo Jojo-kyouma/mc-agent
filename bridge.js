@@ -71,6 +71,7 @@ wss.on('connection', (ws) => {
                 const { signal } = currentAbortController;
 
                 // --- Action API & Safety Layer ---
+                const sleep = (ms) => new Promise(res => setTimeout(res, ms)); // Used by gotoSafe()
                 const validate = (target, action) => {
                     if (!target || !target.position) return;
                     
@@ -99,34 +100,32 @@ wss.on('connection', (ws) => {
                     validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
                 };
                 bot.gotoSafe = async (goal) => {
-                    if (signal.aborted) throw new Error('Script aborted');
-                    if (!bot.entity) throw new Error('gotoSafe: Bot entity not found');
                     let lastPos = bot.entity.position.clone();
                     let lastMoveTime = Date.now();
-                    const interval = setInterval(() => {
-                        if (!bot.entity) return;
-                        if (bot.entity.position.distanceTo(lastPos) > 0.3) {
+                    let finished = false;
+
+                    const moveTask = bot.pathfinder.goto(goal).catch(() => {});
+                    moveTask.finally(() => { finished = true; });
+
+                    while (!finished) {
+                        await sleep(500);
+                        
+                        if (signal?.aborted) {
+                            bot.pathfinder.setGoal(null);
+                            throw new Error('Script aborted');
+                        }
+
+                        const distanceMoved = bot.entity.position.distanceTo(lastPos);
+
+                        if (distanceMoved > 0.3) {
                             lastPos = bot.entity.position.clone();
                             lastMoveTime = Date.now();
+                        } else if (Date.now() - lastMoveTime > 3500) {
+                            bot.pathfinder.setGoal(null);
+                            throw new Error('Movement stuck: Progress stalled in leaf/block.');
                         }
-                    }, 500);
-                    try {
-                        const p = bot.pathfinder.goto(goal);
-                        // Prevent terminal process crash on pathfinder cancellations/watchdog trigger
-                        p.catch(() => {}); 
-                        const watchdog = new Promise((_, reject) => {
-                            const t = setInterval(() => {
-                                if (signal.aborted) { clearInterval(t); return; }
-                                if (Date.now() - lastMoveTime > 3500) {
-                                    clearInterval(t);
-                                    bot.pathfinder.setGoal(null);
-                                    reject(new Error('Movement stuck: Progress stalled for 3.5s. The bot may be trapped or obstructed.'));
-                                }
-                            }, 500);
-                            p.finally(() => clearInterval(t));
-                        });
-                        await Promise.race([p, watchdog]);
-                    } finally { clearInterval(interval); }
+                    }
+                    return await moveTask;
                 };
                 bot.placeBlockSafe = async (ref, face) => {
                     if (signal.aborted) throw new Error('Script aborted');

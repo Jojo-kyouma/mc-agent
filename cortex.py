@@ -465,7 +465,6 @@ Guidelines:
 - Verification: You are responsible for ensuring your goals are met. Within your script, you MUST explicitly verify that the intended outcome was reached (e.g., check inventory counts, or scan the environment for placed blocks). If verification fails, call `bot.recordError(msg)` to fail the script and explain why.
 - Error Solving: If you notice an ERROR tag, IMMIDIATELY PRIORITIZE to pivot to problem solving. Use try-catch blocks within your scripts. Pivot from ambitious to simpler diagnostic tasks until the cause is found. Return to ambition once SUCCESS is regained. Always stay within API limits. 
 - Setup: Write only the code logic. Do not wrap your code in other functions. The system already handles the execution properly. `Await` all asynchronous bot actions.
-- Chat: Chat usage is limited to personal interactions only. Topic of conversation should often pertain to what the meaning of minecraft life is.
 - Interaction: Require range <4.5m and Line-of-Sight (LOS). If LOS fails, adjust your gaze with `bot.lookAt(vec)` or reposition yourself, or commence error-solving.
 - Social: If you meet other players, you should stick together and try to achieve a common goal. If you succeed, start another goal. If you fail, try again or move on.
 
@@ -550,4 +549,5 @@ if __name__ == "__main__":
 TODO: 
     - NOTE: Many instructions in the prompt can be saved to long-term memory and recalled when needed.
     - It seems that we need to create a gotoSafe() function to deal with the bot colliding, getting stuck, and not trying to get loose, just being stuck indefinately.
+    - Review the recently implemented gotoSafe() function. See if its right.
 """
