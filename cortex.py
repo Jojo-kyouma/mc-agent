@@ -217,6 +217,7 @@ class Cortex:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
             self.memory.update_slot(MentalSlot.EPISODIC, f"INTERRUPT: {reason}")
             self.priority_accumulator = 0
+            self.priority_accumulator -= PRIORITY_THRESHOLD # Subtract, don't reset, for persistence
             asyncio.create_task(self.send_abort())
             self.thinking_trigger.set()
 
@@ -445,28 +446,28 @@ class Cortex:
     def _build_brain_prompt(self, context: str):
         system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
 Rules:
-- Goals: Pursue complex, looped objectives.
-- Growth: Build on prior SUCCESSes. Discover efficient strategies. Aggressively pursue new goals.
-- Verification: Mandatory outcome checks (e.g., count items/blocks). Call `bot.recordError(msg)` to catch failure.
+- Verification: Mandatory outcome checks (e.g., count items/blocks). Call `bot.recordError(msg)` to catch failure. Verify againt Status/Inventory/Environment. Items listed under Environment/entities signal dropped items. You might want to collect them with 'bot.nearestEntity(name)'.
 - Errors: On ERROR, use try-catch and pivot to simple diagnostics. Resume ambition after SUCCESS.
-- Syntax: Logic only. No function wrappers. `Await` all async actions. Mandatory `try-catch` for block interactions.
-- Interaction: Range <4.5m + LOS. Adjust via `bot.lookAt(vec)` or movement if LOS fails. Or commence error-solving.
+- Syntax: Logic only. No function wrappers; system has already wrapped the script in async and more. `Await` all async actions. Mandatory `try-catch` for block interactions.
+- Goals: Pursue complex, looped objectives. Build on prior SUCCESSes. Discover efficient strategies. Aggressively pursue new goals.
+- Interaction Rules: Range <4.5m + LOS. LOS ERROR provides obstacle coordinates (x,y,z). Dig the obstacle to clear LOS.
 - Social: Prioritize cooperation. Persist or pivot on failure.
 
 APIs (STRICT LIMIT):
+  Under no circumstance whatsoever should you use APIs not listed here.
 - Vec3: .add/minus/scaled/unit/distanceTo/floored.
 - mcData: `mcData.blocksByName['name'].id` or `mcData.itemsByName['name'].id`.
 - Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-- Actions: `await bot.gotoSafe(new GoalNear(x,y,z,range))`, inventory.items(), equip, findBlock, attack, chat, lookAt, findIds.
-- Safe Methods: MUST use `await bot.digSafe(b)`, `placeBlockSafe(ref, face)`, `activateBlockSafe(b)`, `craftSafe(recipe, count, table)`.
+- Actions: `await bot.gotoSafe(new GoalNear(x,y,z,range))`, inventory.items(), equip, findBlock, attack, chat, lookAt, findIds('_type'), blockAt, nearestEntity
+- Safe Methods: MUST use `await bot.digSafe(block)`, `await bot.placeBlockSafe(referenceBlock, faceVector)`, `await bot.activateBlockSafe(block)`, `await bot.craftSafe(recipe, count, table)`.
 - Crafting: `bot.recipesFor(ID, ...)` (Requires ID). Example: `const r = bot.recipesFor(mcData.itemsByName['oak_planks'].id, null, 1, table)[0];`
 
 JSON Format:
 {
-  "behaviour": { "script": "JS (no literal \\n)", "description": "outcome" },
-  "knowledge": "string", // OPTIONAL. Single entry to persist. MUST be an EXACT copy from RECALLED MEMORIES. Do NOT add to it if INTERNAL KNOWLEDGE is sufficient.
+  "behaviour": { "script": "JS (no literal \\n)", "description": "Key implementation in script. And outcome." },
+  "knowledge": "string", // OPTIONAL. Single entry to persist. MUST be an EXACT copy from RECALLED MEMORIES. Do NOT add if current KNOWLEDGE is sufficient.
   "memory": { 
-    "to_save": "Fact, SUCCESS fix for ERROR, or event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st".)", 
+    "to_save": "ALWAYS save SUCCESS tagged script-implementation description. Otherwise, event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st").", 
     "embedding_key": "recall key", 
     "recall_query": "next search term" 
   }
@@ -533,7 +534,6 @@ if __name__ == "__main__":
 
 """
 TODO: 
-    - NOTE: Many instructions in the prompt can be saved to long-term memory and recalled when needed.
-    - It seems that we need to create a gotoSafe() function to deal with the bot colliding, getting stuck, and not trying to get loose, just being stuck indefinately.
-    - Review the recently implemented gotoSafe() function. See if its right.
+    - default movment used by pathfinder allows digging and 1by1towering blocks. We might take this away. Will give bot trouble however.
+    - LOS rules might be a long-term memory information. It is only relevant for him during interactions. Then again, interactions is everything, so it might be worth to leave it as is.
 """

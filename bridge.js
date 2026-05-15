@@ -3,7 +3,7 @@ const mcData = require('minecraft-data')('1.20.1');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const WebSocket = require('ws');
 const Vec3 = require('vec3');
-const { rawPlaceBlock } = require('./mc-utils.js');
+const { rawPlaceBlock } = require('./mc-utils.js'); // Who would believe that Mineflayer is insufficient? What a shame.
 
 // --- CONFIGURATION ---
 const MINECRAFT_PORT = 53279; // Change this to the port shown when you "Open to LAN"
@@ -23,7 +23,7 @@ const getItemName = (entity) => {
     if (entity.name === 'item' && entity.metadata && entity.metadata[8]) {
         const itemMetadata = entity.metadata[8];
         const item = mcData.items[itemMetadata.itemId];
-        if (item) return `dropped_${item.name}`;
+        if (item) return `${item.name}`;
     }
     if (entity.name) return entity.name;
     return entity.type;
@@ -72,34 +72,14 @@ wss.on('connection', (ws) => {
 
                 // --- Action API & Safety Layer ---
                 const sleep = (ms) => new Promise(res => setTimeout(res, ms)); // Used by gotoSafe()
-                const validate = (target, action) => {
-                    if (!target || !target.position) return;
-                    
-                    const eyePos = bot.entity.position.offset(0, bot.entity.eyeHeight, 0);
-                    const blockCenter = target.position.offset(0.5, 0.5, 0.5);
-                    const dist = eyePos.distanceTo(blockCenter);
-                    if (dist > 4.5) throw new Error(`${action}: Target too far (${dist.toFixed(1)}m).`);
-                    
-                    if (action === 'dig') {
-                        const cursorBlock = bot.blockAtCursor(5.0);
-                        const isVisible = bot.canSeeBlock(target) || (cursorBlock && cursorBlock.position.equals(target.position));
-                        if (!isVisible) {
-                            const obscuredBy = cursorBlock ? cursorBlock.name : 'nothing';
-                            const targetCoords = `${target.position.x}, ${target.position.y}, ${target.position.z}`;
-                            const cursorCoords = cursorBlock ? `${cursorBlock.position.x}, ${cursorBlock.position.y}, ${cursorBlock.position.z}` : 'N/A';
-                            throw new Error(`${action}: LOS failed. Target is ${target.name} at (${targetCoords}), but cursor is pointing at ${obscuredBy} at (${cursorCoords}).`);
-                        }
-                    }
-                };
                 bot.digSafe = async (b) => { 
-                    validate(b, 'dig'); return await bot.dig(b); 
+                    return await bot.dig(b); 
                 };
                 bot.activateBlockSafe = async (b, ...a) => { 
-                    validate(b, 'activateBlock'); return await bot.activateBlock(b, ...a); 
+                    return await bot.activateBlock(b, ...a); 
                 };
                 bot.craftSafe = async (recipe, count, b) => {
                     if (!recipe) throw new Error('craftSafe: No recipe provided. Check if you have enough materials.');
-                    validate(b, 'craft');
                     const resultId = recipe.result.id;
                     const oldAmount = bot.inventory.count(resultId);
 
@@ -111,6 +91,9 @@ wss.on('connection', (ws) => {
                     }
                 };
                 bot.gotoSafe = async (goal) => {
+                    if (!goal || typeof goal.isValid !== 'function') {
+                        throw new Error('gotoSafe: Invalid goal. You MUST use "new GoalNear(x, y, z, range)". Raw Vec3 is not allowed.');
+                    }
                     let lastPos = bot.entity.position.clone();
                     let lastMoveTime = Date.now();
                     let finished = false;
@@ -135,18 +118,20 @@ wss.on('connection', (ws) => {
                     return await moveTask;
                 };
                 bot.placeBlockSafe = async (ref, face) => {
-                    validate(ref, 'placeBlock');
                     const targetPos = ref.position.add(face);
-                    if (bot.entity.position.distanceSquared(targetPos) < 2.25) {
-                        const away = bot.entity.position.offset(-1, 0, 1);
-                        await bot.gotoSafe(new goals.GoalNear(away.x, away.y, away.z, 1));
+                    const botFeet = bot.entity.position.floored();
+                    const botHead = bot.entity.position.offset(0, 1, 0).floored();
+
+                    if (targetPos.equals(botFeet) || targetPos.equals(botHead)) {
+                        throw new Error(`placeBlockSafe: Cannot place block. You are standing at the target position ${targetPos}. Move away first.`);
                     }
+
                     await rawPlaceBlock(bot, ref, face);
                     await bot.waitForTicks(2);
 
                     const placedBlock = bot.blockAt(targetPos);
                     if (!placedBlock || AIR_BLOCKS.has(placedBlock.name)) {
-                        throw new Error(`placeBlock: Verification failed. Target position ${targetPos} is still ${placedBlock ? placedBlock.name : 'empty'}.`);
+                        throw new Error(`placeBlockSafe: Target position ${targetPos} is ${placedBlock ? placedBlock.name : 'empty'}. referenceBlock must be a block.`);
                     }
                 };
                 bot.findIds = (query) => {
@@ -244,10 +229,10 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify(status));
     };
     bot.on('health', sendStatus);
-    bot.on('updateSlot', sendStatus);
-
+    bot.on('playerUpdated', sendStatus);
     const onChat = (username, message) => {
-        if (username === bot.username || ws.readyState !== WebSocket.OPEN) return;
+        if (ws.readyState !== WebSocket.OPEN) return; // Only filter if WebSocket is not open
+        // Removed: username === bot.username, so bot hears itself.
         let processedMessage = message;
         if (processedMessage.endsWith(']') && !processedMessage.startsWith('[')) {
             processedMessage = processedMessage.slice(0, -1);
