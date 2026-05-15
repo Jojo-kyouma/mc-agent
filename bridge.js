@@ -6,7 +6,7 @@ const Vec3 = require('vec3');
 const { rawPlaceBlock } = require('./mc-utils.js'); // Who would believe that Mineflayer is insufficient? What a shame.
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 53279; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 51238; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -118,6 +118,9 @@ wss.on('connection', (ws) => {
                     return await moveTask;
                 };
                 bot.placeBlockSafe = async (ref, face) => {
+                    if (!ref || !ref.position) {
+                        throw new Error('placeBlockSafe: referenceBlock is null or missing position. Did findBlock return null? Did you forget to "await" a previous action? Note: craftSafe does NOT return a block object.');
+                    }
                     const targetPos = ref.position.add(face);
                     const botFeet = bot.entity.position.floored();
                     const botHead = bot.entity.position.offset(0, 1, 0).floored();
@@ -334,15 +337,4 @@ wss.on('connection', (ws) => {
         sendStatus();
         performFullScan();
     })();
-
-    ws.on('close', () => {
-        console.log("Cortex disconnected from WebSocket.");
-        bot.removeListener('chat', onChat);
-        bot.removeListener('blockUpdate', onBlockUpdate);
-        bot.removeListener('health', sendStatus);
-        bot.removeListener('updateSlot', sendStatus);
-        bot.removeListener('entitySpawn', onEntityUpdate);
-        bot.removeListener('entityGone', onEntityUpdate);
-        bot.removeListener('entityMoved', onEntityUpdate);
-    });
 });

@@ -21,7 +21,7 @@ LLM_MODEL_ID = "gemini-3.1-flash-lite"
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 TOP_K_RECALL = 2
 DUPLICATE_THRESHOLD = 0.85
-PRIORITY_THRESHOLD = 4
+PRIORITY_THRESHOLD = 5
 
 # --- Data Structures ---
 class MentalSlot(Enum):
@@ -45,7 +45,7 @@ class WorkingMemory:
 
     SLOT_LIMITS = {
         MentalSlot.KNOWLEDGE: 5,
-        MentalSlot.SOCIAL: 4,
+        MentalSlot.SOCIAL: 5,
         MentalSlot.EPISODIC: 7
     }
 
@@ -84,22 +84,26 @@ class WorkingMemory:
     def to_string(self) -> str:
         """Pipeline to consolidate working memory into a single string."""
         context_parts = [
-            f"### Physical Status/Inventory\n{json.dumps(self.status, indent=2)}",
+            f"### Status/Inventory\n{json.dumps(self.status, indent=2)}",
             f"### Environment\n{json.dumps(self.environment, indent=2)}"
         ]
 
         mappings = [
-            ("Internal Knowledge (Stable)", self.knowledge),
+            ("Knowledge (Stable)", self.knowledge),
             ("Social Dialogue", self.social),
             ("Activity Log (With Feedback)", self.episodic)
         ]
 
         for header, items in mappings:
             if items:
-                context_parts.append(f"### {header}\n- " + "\n- ".join(items))
+                if "Activity Log" in header:
+                    display_items = [f"{len(items) - i}: {item}" for i, item in enumerate(items)]
+                else:
+                    display_items = items
+                context_parts.append(f"### {header}\n- " + "\n- ".join(display_items))
 
         if self.recalled_memories:
-            context_parts.append(f"### Long-Term Memory Recall\nMatches for your previous query ('{self.last_recall_query}'):\n- " + "\n- ".join(self.recalled_memories))
+            context_parts.append(f"### Memory Recall\nMatches for previous query ('{self.last_recall_query}'):\n- " + "\n- ".join(self.recalled_memories))
 
         return "\n\n".join(context_parts)
 
@@ -215,9 +219,10 @@ class Cortex:
         self.priority_accumulator += value
         if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
-            self.memory.update_slot(MentalSlot.EPISODIC, f"INTERRUPT: {reason}")
+            if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
+                self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"INTERRUPTED ({reason}):", 1)
+
             self.priority_accumulator = 0
-            self.priority_accumulator -= PRIORITY_THRESHOLD # Subtract, don't reset, for persistence
             asyncio.create_task(self.send_abort())
             self.thinking_trigger.set()
 
@@ -249,8 +254,6 @@ class Cortex:
                 elif data.get('type') == 'ENVIRONMENT':
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
-
-                # Re-prioritization
                 elif data.get('type') == 'CHAT':
                     self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
                     self._handle_priority(1, "New chat message")
@@ -263,16 +266,12 @@ class Cortex:
                 elif data.get('type') == 'FINISHED':
                     self.thinking_trigger.set()
                 elif data.get('type') == 'SUCCESS':
-                    for i in range(len(self.memory.episodic) - 1, -1, -1):
-                        if "Attempt:" in self.memory.episodic[i]:
-                            self.memory.episodic[i] = self.memory.episodic[i].replace("Attempt:", "SUCCESS:", 1)
-                            break
+                    if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
+                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", "SUCCESS:", 1)
                 elif data.get('type') == 'ERROR':
                     msg = data.get('message')
-                    for i in range(len(self.memory.episodic) - 1, -1, -1):
-                        if "Attempt:" in self.memory.episodic[i]:
-                            self.memory.episodic[i] = self.memory.episodic[i].replace("Attempt:", f"ERROR ({msg}):", 1)
-                            break
+                    if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
+                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"ERROR ({msg}):", 1)
 
                 self.save_working_memory()
         except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
@@ -446,28 +445,27 @@ class Cortex:
     def _build_brain_prompt(self, context: str):
         system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
 Rules:
-- Verification: Mandatory outcome checks (e.g., count items/blocks). Call `bot.recordError(msg)` to catch failure. Verify againt Status/Inventory/Environment. Items listed under Environment/entities signal dropped items. You might want to collect them with 'bot.nearestEntity(name)'.
+- Verification: Mandatory outcome checks (e.g., count items/blocks). Call `bot.recordError(msg)` to catch failure. Verify againt Status/Inventory/Environment. Items listed at Environment/entities signal dropped items.
 - Errors: On ERROR, use try-catch and pivot to simple diagnostics. Resume ambition after SUCCESS.
-- Syntax: Logic only. No function wrappers; system has already wrapped the script in async and more. `Await` all async actions. Mandatory `try-catch` for block interactions.
+- Syntax: Logic only. Do NOT wrap script in Async or other function wrappers. System handles this.
 - Goals: Pursue complex, looped objectives. Build on prior SUCCESSes. Discover efficient strategies. Aggressively pursue new goals.
-- Interaction Rules: Range <4.5m + LOS. LOS ERROR provides obstacle coordinates (x,y,z). Dig the obstacle to clear LOS.
+- Interaction: Range <4.5m + LOS.
 - Social: Prioritize cooperation. Persist or pivot on failure.
 
-APIs (STRICT LIMIT):
-  Under no circumstance whatsoever should you use APIs not listed here.
+APIs:
+  Strict and EXACT adherence to the API below.
 - Vec3: .add/minus/scaled/unit/distanceTo/floored.
-- mcData: `mcData.blocksByName['name'].id` or `mcData.itemsByName['name'].id`.
 - Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-- Actions: `await bot.gotoSafe(new GoalNear(x,y,z,range))`, inventory.items(), equip, findBlock, attack, chat, lookAt, findIds('_type'), blockAt, nearestEntity
-- Safe Methods: MUST use `await bot.digSafe(block)`, `await bot.placeBlockSafe(referenceBlock, faceVector)`, `await bot.activateBlockSafe(block)`, `await bot.craftSafe(recipe, count, table)`.
-- Crafting: `bot.recipesFor(ID, ...)` (Requires ID). Example: `const r = bot.recipesFor(mcData.itemsByName['oak_planks'].id, null, 1, table)[0];`
+- 'bot' actions (you MUST `await` these): .digSafe(block)/.placeBlockSafe(block, vec)/.activateBlockSafe(block)/.craftSafe(recipe, count, table)/.gotoSafe(new GoalNear(x,y,z,range)).
+- 'bot' Object: .inventory.items()/.equip(item, destination)/.findBlock({ matching: id, maxDistance: dist })/.attack(entity)/.chat(msg)/.lookAt(vec)/findIds(_type)/.blockAt(vec)/.nearestEntity(filter)/.tossStack(item)/.recipesFor(ID, null, 1, table).
+- Other: block.light, mcData.blocksByName['name'].id, mcData.itemsByName['name'].id.
 
 JSON Format:
 {
-  "behaviour": { "script": "JS (no literal \\n)", "description": "Key implementation in script. And outcome." },
-  "knowledge": "string", // OPTIONAL. Single entry to persist. MUST be an EXACT copy from RECALLED MEMORIES. Do NOT add if current KNOWLEDGE is sufficient.
+  "behaviour": { "script": "JS (no literal \\n)", "description": "..." },
+  "knowledge": "MUST be an EXACT copy from Memory Recall. Do NOT add if current Knowledge is sufficient."
   "memory": { 
-    "to_save": "ALWAYS save SUCCESS tagged script-implementation description. Otherwise, event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st").", 
+    "to_save": "ALWAYS save SUCCESS-tagged script description IF preceded by ERROR. Otherwise, event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st").", 
     "embedding_key": "recall key", 
     "recall_query": "next search term" 
   }
@@ -536,4 +534,5 @@ if __name__ == "__main__":
 TODO: 
     - default movment used by pathfinder allows digging and 1by1towering blocks. We might take this away. Will give bot trouble however.
     - LOS rules might be a long-term memory information. It is only relevant for him during interactions. Then again, interactions is everything, so it might be worth to leave it as is.
+    - Action API and safety layer is quite long. To make codebase smaller, we might want to trim it down.
 """
