@@ -247,21 +247,20 @@ class Cortex:
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.STATUS, data)  
                     if data.get('onFire'):
-                        self._handle_priority(4, "Agent is on fire")
+                        return
                     if data.get('food', 20) < 15:
-                        self._handle_priority(2, "Agent is hungry")
+                        return
                     if data.get('inventoryUsed', 0) >= 36:
-                        self._handle_priority(3, "Inventory is full")
+                        return
                 elif data.get('type') == 'ENVIRONMENT':
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
                 elif data.get('type') == 'CHAT':
                     self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
-                    self._handle_priority(1, "New chat message")
                 elif data.get('type') == 'ITEM_BREAK':
-                    self._handle_priority(2, f"Tool broken: {data.get('item')}")
+                    return
                 elif data.get('type') == 'AGENT_ATTACKED':
-                    self._handle_priority(5, "Agent is under attack")
+                    return
 
                 # Lifecycle
                 elif data.get('type') == 'FINISHED':

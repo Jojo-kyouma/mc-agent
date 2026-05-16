@@ -6,7 +6,7 @@ const Vec3 = require('vec3');
 const { rawPlaceBlock } = require('./mc-utils.js'); // Who would believe that Mineflayer is insufficient? What a shame.
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 51364; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 50223; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
