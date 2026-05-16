@@ -258,7 +258,7 @@ class Cortex:
                 elif data.get('type') == 'ITEM_BREAK':
                     self._handle_priority(2, f"Tool broken: {data.get('item')}")
                 elif data.get('type') == 'AGENT_ATTACKED':
-                    self._handle_priority(4, "Agent is under attack")
+                    self._handle_priority(5, "Agent is under attack")
 
                 # Lifecycle
                 elif data.get('type') == 'FINISHED':
@@ -266,7 +266,7 @@ class Cortex:
                 elif data.get('type') == 'SUCCESS':
                     msg = data.get('message', 'Action finished')
                     if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
-                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"SUCCESS ({msg}):", 1)
+                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"SUCCESS:", 1)
                 elif data.get('type') == 'FAILURE':
                     msg = data.get('message')
                     if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
@@ -412,9 +412,8 @@ class Cortex:
                 
                 # Update Knowledge (Stable Buffer)
                 new_k = res_data.get("knowledge")
-                if new_k and isinstance(new_k, str):
-                    if new_k in self.memory.recalled_memories:
-                        self.memory.update_slot(MentalSlot.KNOWLEDGE, new_k)
+                if isinstance(new_k, str) and new_k.strip():
+                    self.memory.update_slot(MentalSlot.KNOWLEDGE, new_k.strip())
                 
                 # Update Memory search state
                 memory_data = res_data.get("memory", {})
@@ -447,31 +446,56 @@ class Cortex:
 
     def _build_brain_prompt(self, context: str):
         system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
-Rules:
-- Verification: 
-    1. Repeatedly use outcome checks (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. 
-    2. Call `bot.recordSuccess(msg)` at the end of the script to report final outcome. 
-    3. Error Solving: On ERROR, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You MUST call `bot.recordError(msg)` to catch failure. Resume ambition ONLY after SUCCESS.
-    4. Verify new behaviour script againt Player Inventory & State, Environment, and items listed at Environment/entities that signal dropped items.
-    5. If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log first.
-- Syntax: Logic only. Do NOT wrap script in Async or other function wrappers. System handles this.
-- Goals: Pursue complex, looped objectives. Build on prior SUCCESSes. Discover efficient strategies. Aggressively pursue new goals.
-- Interaction: Range <4.5m + Line of Sight.
 
-APIs:
-  Strict and EXACT adherence to the API below.
-- Vec3: .add/minus/scaled/unit/distanceTo/floored.
-- Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_ (e.g preprocessed raw_iron), _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-- 'bot' actions (you MUST `await` these): .digSafe(block)/.placeBlockSafe(block, vec)/.activateBlockSafe(block)/.craftSafe(recipe, count, table)/.gotoSafe(must_be_GoalNear_object)/.openContainer(containerBlock) -> returns containerWindow.
-- 'bot' Object: .inventory.items()/.equip(item, destination)/.findBlock({ matching: id, maxDistance: dist })/.attack(entity)/.chat(msg)/.lookAt(vec)/findIds(_type)/.blockAt(vec)/.nearestEntity(filter)/.tossStack(item)/.recipesFor(ID, null, 1, table).
-- Other: block.light, mcData.blocksByName['name'].id, mcData.itemsByName['name'].id, GoalNear(x,y,z,range), containerWindow: .slots[index]/.containerItems()/.findContainerItem(itemType, metadata)/.findItemRangeName(start, end, itemName)/.acceptClick({ slot: 0, mouseButton: 0, mode: 0 })/.close().
+RULES
+
+Verification/Observation: 
+    1. Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. 
+    2. Check ### Player Inventory & State and ### Environment before writing script.
+    3. If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field.
+Problem Solving: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition only after success.
+Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals (Nether, Stronghold, End).
+Interaction: Range <4.5m + Line of Sight.
+
+API RULES: Strict adherence required. { } encapsulates a single object parameter.
+
+Core Classes & Properties
+Vec3: .add|minus|scaled|unit|distanceTo|floored
+GoalNear: new GoalNear(x,y,z,range)
+Item: .type (num ID) | .name (str) | .count | .metadata | .enchants[{name, lvl}]
+Block: .type (num ID) | .name (str) | .position (Vec3)
+Entity: .id | .type ('player'|'mob'|'object') | .name (e.g. 'ender_dragon', 'end_crystal') | .position (Vec3) | .velocity (Vec3) | .health
+Other: block.light | mcData.blocksByName['name'].id | mcData.itemsByName['name'].id
+
+Valid Item/Block Patterns
+Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston, obsidian, crying_obsidian, blaze_rod, blaze_powder, ender_pearl, eye_of_ender, end_portal_frame, bed, bow, arrow, shield, _helmet, _chestplate, _leggings, _boots
+
+Async Actions (Must await)
+bot actions: .placeBlockSafe(referenceBlock, face_Vec3) | .craftSafe(recipe, count, table) | .gotoSafe(GoalNear) | .tossStack(item) | .waitForTicks(n) | .moveItem(item, toSlot) | .activateBlock(block) | .dig(block) | .consume() | .activateItem(offHand?) | .deactivateItem()
+
+Sensing & Queries
+bot sensing: .equip(item, dest) ['hand'|'off-hand'|'head'|'torso'|'legs'|'feet'] | .findBlock({ matching, maxDistance }) | .attack(entity) | .chat(msg) | .lookAt(vec) | findIds(_type) | .blockAt(vec) | .nearestEntity(filter) | .entity.position | .recipesFor(ID, null, count, table)
+
+Inventory Management
+bot.inventory: .slots[46] | .items() -> Item[] | .findInventoryItem(id) -> {item, index} | .emptySlotCount() -> number
+
+Boss Tracking
+bot.bossBars: { [id]: { title: 'Ender Dragon', health: 0.0-1.0 } }
+
+UI Windows & Container Instances (Await openers)
+bot openers: .openFurnace(block) -> Furnace | .openEnchantmentTable(block) -> Enchant | .openAnvil(block) -> Anvil | .openVillager(villager) -> Villager
+
+Furnace: async .putInput(id, null, count) | async .putFuel(id, null, count) | async .takeOutput() | .outputItem() -> Item|null
+Enchant: async .putTargetItem(i) | async .putLapis(i) | async .enchant(choice) | async .takeTargetItem() | .enchantments -> [{level, xp}][3]
+Anvil:   async .combine(itemOne, itemTwo)
+Villager: .trades -> Trade[] | async .trade(tradeIndex, times)
 
 JSON Format:
 {
-  "behaviour": { "script": "JS (no literal \\n)", "description": "..." },
-  "knowledge": "MUST be an EXACT copy of a SINGLE entry in Memory Recall. Do NOT add if Knowledge is sufficient."
+  "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "..." },
+  "knowledge": "Must be an exact copy of a single description in Memory Recall (without numbering). Leave empty if Knowledge is sufficient (e.g. few errors).",
   "memory": { 
-    "to_save": "Solution to an ERROR. Otherwise, event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st").", 
+    "to_save": "Solution to an error, only if action is tagged success. Otherwise, event/landmark (e.g. 'Village is located by the lake at (36, -1, 17)', 'Tim has birthday on Nov 1st').", 
     "embedding_key": "recall key (sentence)", 
     "recall_query": "next search term" 
   }
@@ -513,6 +537,8 @@ JSON Format:
             print(f"[!] {self.agent_name} execution stopped: {e}")
         finally:
             listener_task.cancel()
+            if self.actuator_process:
+                self.actuator_process.terminate()
 
 # --- Multi-Agent Usage ---
 async def main():
@@ -535,10 +561,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-"""
-TODO: 
-    - default movment used by pathfinder allows digging and 1by1towering blocks. We might take this away. Will give bot trouble however.
-    - LOS rules might be a long-term memory information. It is only relevant for him during interactions. Then again, interactions is everything, so it might be worth to leave it as is.
-    - Action API and safety layer is quite long. To make codebase smaller, we might want to trim it down.
-"""

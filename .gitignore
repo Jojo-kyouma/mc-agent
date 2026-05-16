@@ -58,5 +58,4 @@ agents/
 log/
 
 # Lead developer's personal files
-deprecated/
-ideas.txt
+lead_dev_files/

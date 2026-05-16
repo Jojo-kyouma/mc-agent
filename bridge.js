@@ -17,13 +17,12 @@ const ENVIRONMENT_RADIUS = 20; // Radius for the horizontal scan (e.g., 2 create
 const BLOCK_UPDATE_RADIUS = ENVIRONMENT_RADIUS + 4; // Interaction distance (Bot can reach blocks ~4 blocks away)
 
 const AIR_BLOCKS = new Set(['air', 'cave_air', 'void_air']);
-
 const getItemName = (entity) => {
     if (entity.type === 'player') return entity.username;
     if (entity.name === 'item' && entity.metadata && entity.metadata[8]) {
         const itemMetadata = entity.metadata[8];
         const item = mcData.items[itemMetadata.itemId];
-        if (item) return `${item.name}`;
+        if (item) return `dropped_${item.name}`;
     }
     if (entity.name) return entity.name;
     return entity.type;
@@ -71,12 +70,6 @@ wss.on('connection', (ws) => {
                 const { signal } = currentAbortController;
 
                 // --- Action API & Safety Layer ---
-                bot.digSafe = async (b) => { 
-                    return await bot.dig(b); 
-                };
-                bot.activateBlockSafe = async (b, ...a) => { 
-                    return await bot.activateBlock(b, ...a); 
-                };
                 bot.craftSafe = async (recipe, count, b) => {
                     if (!recipe) throw new Error('craftSafe: No recipe provided. Check if you have enough materials.');
                     const resultId = recipe.result.id;
@@ -110,22 +103,32 @@ wss.on('connection', (ws) => {
                             lastMoveTime = Date.now();
                         } else if (Date.now() - lastMoveTime > 3500) {
                             bot.pathfinder.setGoal(null);
-                            throw new Error('Movement stuck: Progress stalled in leaf/block.');
+                            throw new Error('Movement stuck: Progress stalled in a block. Maybe not stand too close to the block?');
                         }
                     }
                     return await moveTask;
                 };
                 bot.placeBlockSafe = async (ref, face) => {
-                    if (!ref || !ref.position) {
-                        throw new Error('placeBlockSafe: referenceBlock is null or missing position. Did findBlock return null? Note: craftSafe does NOT return a block object.');
+                    if (!ref || !ref.position || typeof ref.name === 'undefined') {
+                        throw new Error('placeBlockSafe: referenceBlock is invalid. You MUST pass a Block object (from findBlock/blockAt), NOT an Item or a Vec3.');
+                    }
+                    if (!face || typeof face.x !== 'number') {
+                        throw new Error('placeBlockSafe: face must be a unit Vec3 offset (e.g. new Vec3(0, 1, 0)).');
                     }
                     const targetPos = ref.position.add(face);
+
+                    const existingBlock = bot.blockAt(targetPos);
+                    if (existingBlock && !AIR_BLOCKS.has(existingBlock.name)) {
+                        return;
+                    }
+
                     const botFeet = bot.entity.position.floored();
                     const botHead = bot.entity.position.offset(0, 1, 0).floored();
                     if (targetPos.equals(botFeet) || targetPos.equals(botHead)) {
                         throw new Error(`placeBlockSafe: Cannot place block. You are standing at the target position ${targetPos}. Move away first.`);
                     }
                     await rawPlaceBlock(bot, ref, face);
+                    await bot.placeBlock(ref, face);
                     await bot.waitForTicks(2);
                     const placedBlock = bot.blockAt(targetPos);
                     if (!placedBlock || AIR_BLOCKS.has(placedBlock.name)) {
@@ -137,14 +140,13 @@ wss.on('connection', (ws) => {
                         .filter(i => i.name.includes(query))
                         .map(i => i.id);
                 };
+                // Feedback system
                 bot.recordError = (m) => { throw new Error(m); };
                 bot.recordFailure = (m) => {
                     const err = new Error(m);
                     err.name = 'FailureError';
                     throw err;
                 };
-                bot._successMsg = null;
-                bot.recordSuccess = (m) => { bot._successMsg = m; };
 
                 // --- Execute the behavior script ---
                 try {
@@ -175,7 +177,7 @@ wss.on('connection', (ws) => {
 
                     await Promise.race([scriptPromise, abortPromise]);
 
-                    ws.send(JSON.stringify({ type: 'SUCCESS', message: bot._successMsg || 'Action finished' }));
+                    ws.send(JSON.stringify({ type: 'SUCCESS', msg: 'Action finished' }));
                 } catch (scriptErr) {
                     const isAbort = signal.aborted || 
                                     scriptErr.message === 'Script aborted' || 
@@ -199,18 +201,16 @@ wss.on('connection', (ws) => {
             console.log("Error parsing command message:", err);
         }
     });
-
-    // --- Event Listeners ---
-    bot.on('itemBreak', (item) => {
+    const onItemBreak = (item) => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ITEM_BREAK', item: item.name }));
         }
-    });
-    bot.on('entityHurt', (entity) => {
+    };
+    const onEntityHurt = (entity) => {
         if (entity === bot.entity && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'AGENT_ATTACKED' }));
         }
-    });
+    };
     const sendStatus = () => {
         const inventoryMap = bot.inventory.items().reduce((acc, item) => {
             acc[item.name] = (acc[item.name] || 0) + item.count;
@@ -234,18 +234,14 @@ wss.on('connection', (ws) => {
         };
         ws.send(JSON.stringify(status));
     };
-    bot.on('health', sendStatus);
-    bot.on('playerUpdated', sendStatus);
     const onChat = (username, message) => {
-        if (ws.readyState !== WebSocket.OPEN) return; // Only filter if WebSocket is not open
-        // Removed: username === bot.username, so bot hears itself.
+        if (ws.readyState !== WebSocket.OPEN) return;
         let processedMessage = message;
         if (processedMessage.endsWith(']') && !processedMessage.startsWith('[')) {
             processedMessage = processedMessage.slice(0, -1);
         }
         ws.send(JSON.stringify({ type: 'CHAT', username: username, message: processedMessage }));
     };
-    bot.on('chat', onChat);
 
     const syncEnvironment = () => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
@@ -291,14 +287,14 @@ wss.on('connection', (ws) => {
         }
         syncEnvironment();
     };
-    bot.on('move', () => {
+    const onMove = () => {
         if (!bot.entity) return;
         if (lastScanPos) {
             const dist = bot.entity.position.distanceTo(lastScanPos);
             if (dist < 1.5) return;
         }
         performFullScan();
-    });
+    };
     const onBlockUpdate = (oldBlock, newBlock) => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
         const dist = newBlock.position.distanceTo(bot.entity.position);
@@ -317,7 +313,6 @@ wss.on('connection', (ws) => {
 
         syncEnvironment();
     };
-    bot.on('blockUpdate', onBlockUpdate);
 
     const onEntityUpdate = (entity) => {
         if (entity === bot.entity) return;
@@ -326,9 +321,40 @@ wss.on('connection', (ws) => {
             syncEnvironment();
         }
     };
+
+    // --- Event Listeners ---
+    bot.on('itemBreak', onItemBreak);
+    bot.on('entityHurt', onEntityHurt);
+    bot.on('health', sendStatus);
+    bot.on('chat', onChat);
+    bot.on('move', onMove);
+    bot.on('blockUpdate', onBlockUpdate);
     bot.on('entitySpawn', onEntityUpdate);
     bot.on('entityGone', onEntityUpdate);
     bot.on('entityMoved', onEntityUpdate);
+    bot.on('health', sendStatus);
+    bot.inventory.on('updateSlot', sendStatus);
+    bot.on('heldItemChanged', sendStatus);
+
+    ws.on('close', () => {
+        bot.removeListener('itemBreak', onItemBreak);
+        bot.removeListener('entityHurt', onEntityHurt);
+        bot.removeListener('health', sendStatus);
+        bot.inventory.removeListener('updateSlot', sendStatus);
+        bot.removeListener('heldItemChanged', sendStatus);
+        bot.removeListener('chat', onChat);
+        bot.removeListener('move', onMove);
+        bot.removeListener('blockUpdate', onBlockUpdate);
+        bot.removeListener('entitySpawn', onEntityUpdate);
+        bot.removeListener('entityGone', onEntityUpdate);
+        bot.removeListener('entityMoved', onEntityUpdate);
+
+        if (syncTimeout) {
+            clearTimeout(syncTimeout);
+            syncTimeout = null;
+        }
+        abortCurrentScript();
+    });
 
     // Ensure world is loaded and entity is initialized before sending initial sync 
     (async () => {
