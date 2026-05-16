@@ -84,7 +84,7 @@ class WorkingMemory:
     def to_string(self) -> str:
         """Pipeline to consolidate working memory into a single string."""
         context_parts = [
-            f"### Status/Inventory\n{json.dumps(self.status, indent=2)}",
+            f"### Player Inventory & State\n{json.dumps(self.status, indent=2)}",
             f"### Environment\n{json.dumps(self.environment, indent=2)}"
         ]
 
@@ -96,14 +96,12 @@ class WorkingMemory:
 
         for header, items in mappings:
             if items:
-                if "Activity Log" in header:
-                    display_items = [f"{len(items) - i}: {item}" for i, item in enumerate(items)]
-                else:
-                    display_items = items
+                display_items = [f"{len(items) - i}: {item}" for i, item in enumerate(items)]
                 context_parts.append(f"### {header}\n- " + "\n- ".join(display_items))
 
         if self.recalled_memories:
-            context_parts.append(f"### Memory Recall\nMatches for previous query ('{self.last_recall_query}'):\n- " + "\n- ".join(self.recalled_memories))
+            display_memories = [f"{len(self.recalled_memories) - i}: {item}" for i, item in enumerate(self.recalled_memories)]
+            context_parts.append(f"### Memory Recall\nMatches for previous query ('{self.last_recall_query}'):\n- " + "\n- ".join(display_memories))
 
         return "\n\n".join(context_parts)
 
@@ -266,8 +264,13 @@ class Cortex:
                 elif data.get('type') == 'FINISHED':
                     self.thinking_trigger.set()
                 elif data.get('type') == 'SUCCESS':
+                    msg = data.get('message', 'Action finished')
                     if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
-                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", "SUCCESS:", 1)
+                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"SUCCESS ({msg}):", 1)
+                elif data.get('type') == 'FAILURE':
+                    msg = data.get('message')
+                    if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
+                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"FAIL ({msg}):", 1)
                 elif data.get('type') == 'ERROR':
                     msg = data.get('message')
                     if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
@@ -445,28 +448,31 @@ class Cortex:
     def _build_brain_prompt(self, context: str):
         system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
 Rules:
-- Verification: Mandatory outcome checks (e.g., count items/blocks). Call `bot.recordError(msg)` to catch failure. Verify againt Status/Inventory/Environment. Items listed at Environment/entities signal dropped items.
-- Errors: On ERROR, use try-catch and pivot to simple diagnostics. Resume ambition after SUCCESS.
+- Verification: 
+    1. Repeatedly use outcome checks (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. 
+    2. Call `bot.recordSuccess(msg)` at the end of the script to report final outcome. 
+    3. Error Solving: On ERROR, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You MUST call `bot.recordError(msg)` to catch failure. Resume ambition ONLY after SUCCESS.
+    4. Verify new behaviour script againt Player Inventory & State, Environment, and items listed at Environment/entities that signal dropped items.
+    5. If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log first.
 - Syntax: Logic only. Do NOT wrap script in Async or other function wrappers. System handles this.
 - Goals: Pursue complex, looped objectives. Build on prior SUCCESSes. Discover efficient strategies. Aggressively pursue new goals.
-- Interaction: Range <4.5m + LOS.
-- Social: Prioritize cooperation. Persist or pivot on failure.
+- Interaction: Range <4.5m + Line of Sight.
 
 APIs:
   Strict and EXACT adherence to the API below.
 - Vec3: .add/minus/scaled/unit/distanceTo/floored.
-- Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
-- 'bot' actions (you MUST `await` these): .digSafe(block)/.placeBlockSafe(block, vec)/.activateBlockSafe(block)/.craftSafe(recipe, count, table)/.gotoSafe(new GoalNear(x,y,z,range)).
+- Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_ (e.g preprocessed raw_iron), _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston.
+- 'bot' actions (you MUST `await` these): .digSafe(block)/.placeBlockSafe(block, vec)/.activateBlockSafe(block)/.craftSafe(recipe, count, table)/.gotoSafe(must_be_GoalNear_object)/.openContainer(containerBlock) -> returns containerWindow.
 - 'bot' Object: .inventory.items()/.equip(item, destination)/.findBlock({ matching: id, maxDistance: dist })/.attack(entity)/.chat(msg)/.lookAt(vec)/findIds(_type)/.blockAt(vec)/.nearestEntity(filter)/.tossStack(item)/.recipesFor(ID, null, 1, table).
-- Other: block.light, mcData.blocksByName['name'].id, mcData.itemsByName['name'].id.
+- Other: block.light, mcData.blocksByName['name'].id, mcData.itemsByName['name'].id, GoalNear(x,y,z,range), containerWindow: .slots[index]/.containerItems()/.findContainerItem(itemType, metadata)/.findItemRangeName(start, end, itemName)/.acceptClick({ slot: 0, mouseButton: 0, mode: 0 })/.close().
 
 JSON Format:
 {
   "behaviour": { "script": "JS (no literal \\n)", "description": "..." },
-  "knowledge": "MUST be an EXACT copy from Memory Recall. Do NOT add if current Knowledge is sufficient."
+  "knowledge": "MUST be an EXACT copy of a SINGLE entry in Memory Recall. Do NOT add if Knowledge is sufficient."
   "memory": { 
-    "to_save": "ALWAYS save SUCCESS-tagged script description IF preceded by ERROR. Otherwise, event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st").", 
-    "embedding_key": "recall key", 
+    "to_save": "Solution to an ERROR. Otherwise, event/landmark (e.g. "Village is located by the lake at (36, -1, 17)", "Tim has birthday on Nov 1st").", 
+    "embedding_key": "recall key (sentence)", 
     "recall_query": "next search term" 
   }
 }"""

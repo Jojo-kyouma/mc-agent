@@ -6,7 +6,7 @@ const Vec3 = require('vec3');
 const { rawPlaceBlock } = require('./mc-utils.js'); // Who would believe that Mineflayer is insufficient? What a shame.
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 51238; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 51364; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -71,7 +71,6 @@ wss.on('connection', (ws) => {
                 const { signal } = currentAbortController;
 
                 // --- Action API & Safety Layer ---
-                const sleep = (ms) => new Promise(res => setTimeout(res, ms)); // Used by gotoSafe()
                 bot.digSafe = async (b) => { 
                     return await bot.dig(b); 
                 };
@@ -82,14 +81,13 @@ wss.on('connection', (ws) => {
                     if (!recipe) throw new Error('craftSafe: No recipe provided. Check if you have enough materials.');
                     const resultId = recipe.result.id;
                     const oldAmount = bot.inventory.count(resultId);
-
                     await bot.craft(recipe, count, b);
-                    
                     const newAmount = bot.inventory.count(resultId);
                     if (newAmount <= oldAmount) {
                         throw new Error(`craftSafe: Verification failed. Inventory count for item ID ${resultId} did not increase.`);
                     }
                 };
+                const sleep = (ms) => new Promise(res => setTimeout(res, ms));
                 bot.gotoSafe = async (goal) => {
                     if (!goal || typeof goal.isValid !== 'function') {
                         throw new Error('gotoSafe: Invalid goal. You MUST use "new GoalNear(x, y, z, range)". Raw Vec3 is not allowed.');
@@ -119,19 +117,16 @@ wss.on('connection', (ws) => {
                 };
                 bot.placeBlockSafe = async (ref, face) => {
                     if (!ref || !ref.position) {
-                        throw new Error('placeBlockSafe: referenceBlock is null or missing position. Did findBlock return null? Did you forget to "await" a previous action? Note: craftSafe does NOT return a block object.');
+                        throw new Error('placeBlockSafe: referenceBlock is null or missing position. Did findBlock return null? Note: craftSafe does NOT return a block object.');
                     }
                     const targetPos = ref.position.add(face);
                     const botFeet = bot.entity.position.floored();
                     const botHead = bot.entity.position.offset(0, 1, 0).floored();
-
                     if (targetPos.equals(botFeet) || targetPos.equals(botHead)) {
                         throw new Error(`placeBlockSafe: Cannot place block. You are standing at the target position ${targetPos}. Move away first.`);
                     }
-
                     await rawPlaceBlock(bot, ref, face);
                     await bot.waitForTicks(2);
-
                     const placedBlock = bot.blockAt(targetPos);
                     if (!placedBlock || AIR_BLOCKS.has(placedBlock.name)) {
                         throw new Error(`placeBlockSafe: Target position ${targetPos} is ${placedBlock ? placedBlock.name : 'empty'}. referenceBlock must be a block.`);
@@ -143,7 +138,13 @@ wss.on('connection', (ws) => {
                         .map(i => i.id);
                 };
                 bot.recordError = (m) => { throw new Error(m); };
-                bot.recordSuccess = () => {};
+                bot.recordFailure = (m) => {
+                    const err = new Error(m);
+                    err.name = 'FailureError';
+                    throw err;
+                };
+                bot._successMsg = null;
+                bot.recordSuccess = (m) => { bot._successMsg = m; };
 
                 // --- Execute the behavior script ---
                 try {
@@ -174,7 +175,7 @@ wss.on('connection', (ws) => {
 
                     await Promise.race([scriptPromise, abortPromise]);
 
-                    ws.send(JSON.stringify({ type: 'SUCCESS' }));
+                    ws.send(JSON.stringify({ type: 'SUCCESS', message: bot._successMsg || 'Action finished' }));
                 } catch (scriptErr) {
                     const isAbort = signal.aborted || 
                                     scriptErr.message === 'Script aborted' || 
@@ -183,8 +184,10 @@ wss.on('connection', (ws) => {
 
                     if (!isAbort) {
                         const errorMsg = scriptErr instanceof Error ? scriptErr.message : String(scriptErr);
-                        console.error(`[ERROR]: ${errorMsg}`);
-                        ws.send(JSON.stringify({ type: 'ERROR', message: errorMsg }));
+                        const isFailure = scriptErr.name === 'FailureError';
+                        const type = isFailure ? 'FAILURE' : 'ERROR';
+                        console.error(`[${type}]: ${errorMsg}`);
+                        ws.send(JSON.stringify({ type: type, message: errorMsg }));
                     }
                 } finally {
                     if (!signal.aborted) {
