@@ -2,6 +2,8 @@ import asyncio
 import sys
 import subprocess
 import os
+import time
+from collections import deque
 from transformers import data
 import websockets
 import json
@@ -151,6 +153,7 @@ class Cortex:
         self.actuator_process = None
         self.thinking_trigger = asyncio.Event()
         self.priority_accumulator = 0
+        self.request_history = deque()
 
         self._init_db()
         # Initialize embedding model for long-term memory from records
@@ -454,7 +457,7 @@ Verification/Observation:
     2. Check ### Player Inventory & State and ### Environment before writing script.
     3. If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field.
 Problem Solving: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition only after success.
-Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals (Nether, Stronghold, End).
+Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals (e.g. Nether, Stronghold, End).
 Interaction: Range <4.5m + Line of Sight.
 
 API RULES: Strict adherence required. { } encapsulates a single object parameter.
@@ -468,7 +471,7 @@ Entity: .id | .type ('player'|'mob'|'object') | .name (e.g. 'ender_dragon', 'end
 Other: block.light | mcData.blocksByName['name'].id | mcData.itemsByName['name'].id
 
 Valid Item/Block Patterns
-Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_, _ingot, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston, obsidian, crying_obsidian, blaze_rod, blaze_powder, ender_pearl, eye_of_ender, end_portal_frame, bed, bow, arrow, shield, _helmet, _chestplate, _leggings, _boots
+Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_, _ingot, deepslate_*_ore, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston, obsidian, crying_obsidian, blaze_rod, blaze_powder, ender_pearl, eye_of_ender, end_portal_frame, bed, bow, arrow, shield, _helmet, _chestplate, _leggings, _boots
 
 Async Actions (Must await)
 bot actions: .placeBlockSafe(referenceBlock, face_Vec3) | .craftSafe(recipe, count, table) | .gotoSafe(GoalNear) | .tossStack(item) | .waitForTicks(n) | .moveItem(item, toSlot) | .activateBlock(block) | .dig(block) | .consume() | .activateItem(offHand?) | .deactivateItem()
@@ -515,10 +518,21 @@ JSON Format:
         # Main reasoning loop
         async def reasoning_loop():
             while True:
-                await asyncio.sleep(5) # Bypass rate-limiting (optimized for 1 agent)
                 await self.thinking_trigger.wait()
                 self.thinking_trigger.clear()
                 
+                # Rate limiting logic: Max 15 requests per minute
+                now = time.time()
+                while self.request_history and now - self.request_history[0] > 60:
+                    self.request_history.popleft()
+
+                if len(self.request_history) >= 15:
+                    wait_time = 60 - (now - self.request_history[0])
+                    print(f"[*] Rate limit reached (15 RPM) for {self.agent_name}. Pausing for {wait_time:.2f}s...")
+                    await asyncio.sleep(wait_time)
+                    now = time.time()
+
+                self.request_history.append(now)
                 action, raw_json, prompt, memory_data = await self.think()
                 
                 # Logging for analysis and debugging
