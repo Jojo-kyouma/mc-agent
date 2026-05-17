@@ -24,6 +24,7 @@ EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 TOP_K_RECALL = 2
 DUPLICATE_THRESHOLD = 0.85
 PRIORITY_THRESHOLD = 5
+REPRIORITIZATION_COOLDOWN = 10
 
 # --- Data Structures ---
 class MentalSlot(Enum):
@@ -152,6 +153,7 @@ class Cortex:
         self.actuator_path = actuator_path
         self.actuator_process = None
         self.thinking_trigger = asyncio.Event()
+        self.last_reprioritization_time = 0
         self.priority_accumulator = 0
         self.request_history = deque()
 
@@ -217,12 +219,16 @@ class Cortex:
 
     def _handle_priority(self, value: int, reason: str):
         """Increments priority and triggers thinking if threshold is met."""
+        if time.time() - self.last_reprioritization_time < REPRIORITIZATION_COOLDOWN:
+            return
+
         self.priority_accumulator += value
         if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
             if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
                 self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"INTERRUPT ({reason}):", 1)
 
+            self.last_reprioritization_time = time.time()
             self.priority_accumulator = 0
             asyncio.create_task(self.send_abort())
             self.thinking_trigger.set()
