@@ -448,13 +448,13 @@ class Cortex:
         return None, None, prompt, None
 
     def _build_brain_prompt(self, context: str):
-        system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
+        system_instr = """Role: Minecraft Agent using Mineflayer API. Work towards defeating Ender Dragon.
 
 RULES
 Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Check Player Inventory & State, Environment, and Action Log (with Feedback) before coding.
 Observe: If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field. In Social Dialogue, player's might give you useful advice.
 Problem Solve: On error and failure, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition only after success.
-Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. Main goal is to "beat" the game.
+Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. 
 Interaction: Range <4.5m + Line of Sight.
 
 API RULES (Strict adherence required. { } encapsulates a single object parameter.)
