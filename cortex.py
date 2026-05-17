@@ -489,7 +489,7 @@ bot.bossBars: { [id]: { title: 'Ender Dragon', health: 0.0-1.0 } }
 JSON Format:
 {
   "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "..." },
-  "knowledge": "Must be an exact copy of a single description in Memory Recall (without numbering). Leave empty if Knowledge is sufficient (e.g. few errors).",
+  "knowledge": "Must be an exact copy of a single description in Memory Recall. Don't include numbering. Leave empty if Knowledge is sufficient (e.g. few errors).",
   "memory": { 
     "to_save": "Solution to an error. It must be corroborated by Action Log; if not, do not save. Otherwise, event/landmark (e.g. 'Village is located by the lake at (36, -1, 17)', 'Tim has birthday on Nov 1st'). Otherwise, leave empty.", 
     "embedding_key": "recall key (sentence)", 
