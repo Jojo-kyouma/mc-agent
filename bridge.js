@@ -6,7 +6,7 @@ const Vec3 = require('vec3');
 const { rawPlaceBlock } = require('./mc-utils.js'); // Who would believe that Mineflayer is insufficient? What a shame.
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 50223; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 54650; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -22,7 +22,7 @@ const getItemName = (entity) => {
     if (entity.name === 'item' && entity.metadata && entity.metadata[8]) {
         const itemMetadata = entity.metadata[8];
         const item = mcData.items[itemMetadata.itemId];
-        if (item) return `dropped_${item.name}`;
+        if (item) return `${item.name} (dropped)`;
     }
     if (entity.name) return entity.name;
     return entity.type;
@@ -226,7 +226,7 @@ wss.on('connection', (ws) => {
             inventoryUsed: bot.inventory.items().length,
             onFire: (bot.entity.metadata[0] & 0x01) !== 0,
             heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
-            eyePosition: { 
+            worldPosition_eyePosition: { 
                 x: Number(eyePos.x.toFixed(2)), 
                 y: Number(eyePos.y.toFixed(2)), 
                 z: Number(eyePos.z.toFixed(2)) 
@@ -242,7 +242,6 @@ wss.on('connection', (ws) => {
         }
         ws.send(JSON.stringify({ type: 'CHAT', username: username, message: processedMessage }));
     };
-
     const syncEnvironment = () => {
         if (ws.readyState !== WebSocket.OPEN || !bot.entity) return;
         if (syncTimeout) return;
@@ -310,10 +309,8 @@ wss.on('connection', (ws) => {
         if (newBlock && !AIR_BLOCKS.has(newBlock.name)) {
             nearbyBlocksCount.set(newBlock.name, (nearbyBlocksCount.get(newBlock.name) || 0) + 1);
         }
-
         syncEnvironment();
     };
-
     const onEntityUpdate = (entity) => {
         if (entity === bot.entity) return;
         const distSq = entity.position.distanceSquared(bot.entity.position);
@@ -321,49 +318,46 @@ wss.on('connection', (ws) => {
             syncEnvironment();
         }
     };
-
     // --- Event Listeners ---
-    bot.on('itemBreak', onItemBreak);
-    bot.on('entityHurt', onEntityHurt);
-    bot.on('health', sendStatus);
-    bot.on('chat', onChat);
-    bot.on('move', onMove);
-    bot.on('blockUpdate', onBlockUpdate);
-    bot.on('entitySpawn', onEntityUpdate);
-    bot.on('entityGone', onEntityUpdate);
-    bot.on('entityMoved', onEntityUpdate);
-    bot.on('health', sendStatus);
-    bot.inventory.on('updateSlot', sendStatus);
-    bot.on('heldItemChanged', sendStatus);
+    const activeListeners = [];
+    const listenTo = (emitter, event, handler) => {
+        emitter.on(event, handler);
+        activeListeners.push({ emitter, event, handler });
+    };
+    listenTo(bot, 'itemBreak', onItemBreak);
+    listenTo(bot, 'entityHurt', onEntityHurt);
+    listenTo(bot, 'health', sendStatus);
+    listenTo(bot, 'chat', onChat);
+    listenTo(bot, 'move', onMove);
+    listenTo(bot, 'blockUpdate', onBlockUpdate);
+    listenTo(bot, 'entitySpawn', onEntityUpdate);
+    listenTo(bot, 'entityGone', onEntityUpdate);
+    listenTo(bot, 'entityMoved', onEntityUpdate);
+    listenTo(bot.inventory, 'updateSlot', sendStatus);
+    listenTo(bot, 'heldItemChanged', sendStatus);
+
+    // Ensure world is loaded and entity is initialized before sending initial sync
+    const onSpawn = () => {
+        (async () => {
+            while (!bot.entity || !bot.entity.position || !bot.blockAt(bot.entity.position)) {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            sendStatus();
+            performFullScan();
+        })();
+    };
+    listenTo(bot, 'spawn', onSpawn);
 
     ws.on('close', () => {
-        bot.removeListener('itemBreak', onItemBreak);
-        bot.removeListener('entityHurt', onEntityHurt);
-        bot.removeListener('health', sendStatus);
-        bot.inventory.removeListener('updateSlot', sendStatus);
-        bot.removeListener('heldItemChanged', sendStatus);
-        bot.removeListener('chat', onChat);
-        bot.removeListener('move', onMove);
-        bot.removeListener('blockUpdate', onBlockUpdate);
-        bot.removeListener('entitySpawn', onEntityUpdate);
-        bot.removeListener('entityGone', onEntityUpdate);
-        bot.removeListener('entityMoved', onEntityUpdate);
-
+        while (activeListeners.length > 0) {
+            const { emitter, event, handler } = activeListeners.pop();
+            emitter.removeListener(event, handler);
+        }
         if (syncTimeout) {
             clearTimeout(syncTimeout);
             syncTimeout = null;
         }
         abortCurrentScript();
     });
-
-    // Ensure world is loaded and entity is initialized before sending initial sync 
-    (async () => {
-        console.log("Cortex linked. Waiting for world data to load...");
-        while (!bot.entity || !bot.entity.position || !bot.blockAt(bot.entity.position)) {
-            if (ws.readyState !== WebSocket.OPEN) return;
-            await bot.waitForTicks(5);
-        }
-        sendStatus();
-        performFullScan();
-    })();
 });

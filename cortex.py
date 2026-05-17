@@ -46,9 +46,9 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.KNOWLEDGE: 5,
+        MentalSlot.KNOWLEDGE: 3,
         MentalSlot.SOCIAL: 5,
-        MentalSlot.EPISODIC: 7
+        MentalSlot.EPISODIC: 5
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
@@ -86,24 +86,24 @@ class WorkingMemory:
     def to_string(self) -> str:
         """Pipeline to consolidate working memory into a single string."""
         context_parts = [
-            f"### Player Inventory & State\n{json.dumps(self.status, indent=2)}",
-            f"### Environment\n{json.dumps(self.environment, indent=2)}"
+            f"Player Inventory & State\n{json.dumps(self.status)}",
+            f"Environment\n{json.dumps(self.environment)}"
         ]
 
         mappings = [
             ("Knowledge (Stable)", self.knowledge),
             ("Social Dialogue", self.social),
-            ("Activity Log (With Feedback)", self.episodic)
+            ("Action Log (with Feedback)", self.episodic)
         ]
 
         for header, items in mappings:
             if items:
                 display_items = [f"{len(items) - i}: {item}" for i, item in enumerate(items)]
-                context_parts.append(f"### {header}\n- " + "\n- ".join(display_items))
+                context_parts.append(f"{header}\n" + "\n".join(display_items))
 
         if self.recalled_memories:
             display_memories = [f"{len(self.recalled_memories) - i}: {item}" for i, item in enumerate(self.recalled_memories)]
-            context_parts.append(f"### Memory Recall\nMatches for previous query ('{self.last_recall_query}'):\n- " + "\n- ".join(display_memories))
+            context_parts.append(f"Memory Recall\nMatches for previous query ('{self.last_recall_query}')\n" + "\n".join(display_memories))
 
         return "\n\n".join(context_parts)
 
@@ -221,7 +221,7 @@ class Cortex:
         if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
             if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
-                self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"INTERRUPTED ({reason}):", 1)
+                self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"INTERRUPT ({reason}):", 1)
 
             self.priority_accumulator = 0
             asyncio.create_task(self.send_abort())
@@ -234,7 +234,7 @@ class Cortex:
             payload = ActionFactory.create_payload(action)
             await self.websocket.send(payload)
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.memory.update_slot(MentalSlot.EPISODIC, f"[{timestamp}] Attempt: {action.description}")
+            self.memory.update_slot(MentalSlot.EPISODIC, f"[{timestamp}] Attempt: {action.content}")
 
     async def listen_to_senses(self):
         """Continuously process updates from the Mineflayer bot."""
@@ -247,20 +247,21 @@ class Cortex:
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.STATUS, data)  
                     if data.get('onFire'):
-                        return
+                        self._handle_priority(4, "Agent is on fire")
                     if data.get('food', 20) < 15:
-                        return
+                        self._handle_priority(2, "Agent is hungry")
                     if data.get('inventoryUsed', 0) >= 36:
-                        return
+                        self._handle_priority(3, "Full inventory")
                 elif data.get('type') == 'ENVIRONMENT':
                     data.pop('type', None)
                     self.memory.update_slot(MentalSlot.ENVIRONMENT, data)
                 elif data.get('type') == 'CHAT':
                     self.memory.update_slot(MentalSlot.SOCIAL, f"{data['username']}: {data['message']}")
+                    self._handle_priority(1, "New chat msg")
                 elif data.get('type') == 'ITEM_BREAK':
                     return
                 elif data.get('type') == 'AGENT_ATTACKED':
-                    return
+                    self._handle_priority(PRIORITY_THRESHOLD, "Agent is attacked")
 
                 # Lifecycle
                 elif data.get('type') == 'FINISHED':
@@ -450,59 +451,46 @@ class Cortex:
         system_instr = """Role: Autonomous Minecraft Agent (Mineflayer API).
 
 RULES
-
-Verification/Observation: 
-    1. Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. 
-    2. Check ### Player Inventory & State and ### Environment before writing script.
-    3. If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field.
-Problem Solving: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition only after success.
-Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals (e.g. Nether, Stronghold, End).
+Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Check Player Inventory & State, Environment, and Action Log (with Feedback) before coding.
+Observe: If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field. In Social Dialogue, player's might give you useful advice.
+Problem Solve: On error and failure, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition only after success.
+Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. Main goal is to "beat" the game.
 Interaction: Range <4.5m + Line of Sight.
 
-API RULES: Strict adherence required. { } encapsulates a single object parameter.
-
-Core Classes & Properties
+API RULES (Strict adherence required. { } encapsulates a single object parameter.)
+-Classes, Properties & Names
 Vec3: .add|minus|scaled|unit|distanceTo|floored
 GoalNear: new GoalNear(x,y,z,range)
-Item: .type (num ID) | .name (str) | .count | .metadata | .enchants[{name, lvl}]
-Block: .type (num ID) | .name (str) | .position (Vec3)
-Entity: .id | .type ('player'|'mob'|'object') | .name (e.g. 'ender_dragon', 'end_crystal') | .position (Vec3) | .velocity (Vec3) | .health
-Other: block.light | mcData.blocksByName['name'].id | mcData.itemsByName['name'].id
+Item: .type (num ID)|.name|.count|.metadata|.enchants[{name, lvl}]
+Block: .type (num ID)|.name|.position (Vec3)|.light
+Entity: .id|.type ('player'|'mob'|'object')|.name|.position (Vec3)|.velocity (Vec3)|.health
+mcData: mcData.blocksByName['name'].id|mcData.itemsByName['name'].id
+Valid Item/Block Patterns: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_, _ingot, deepslate_*_ore, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston, obsidian, crying_obsidian, blaze_rod, blaze_powder, ender_pearl, eye_of_ender, end_portal_frame, bed, bow, arrow, shield, _helmet, _chestplate, _leggings, _boots
 
-Valid Item/Block Patterns
-Items: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_, _ingot, deepslate_*_ore, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston, obsidian, crying_obsidian, blaze_rod, blaze_powder, ender_pearl, eye_of_ender, end_portal_frame, bed, bow, arrow, shield, _helmet, _chestplate, _leggings, _boots
+-Async Actions (Must await)
+bot actions: .placeBlockSafe(referenceBlock, face_Vec3)|.craftSafe(recipe, count, table)|.gotoSafe(GoalNear)|.tossStack(item)|.waitForTicks(n)|.moveItem(item, toSlot)|.activateBlock(block)|.dig(block)|.consume()|.activateItem(offHand?)|.deactivateItem()|.setControlState(['forward', 'back', 'left', 'right', 'jump', 'sprint', 'sneak'], true/false)
+bot openers: .openFurnace(block)->Furnace|.openEnchantmentTable(block)->Enchant|.openAnvil(block)->Anvil|.openVillager(villager)->Villager
+Furnace: .putInput(id, null, count)|.putFuel(id, null, count)|.takeOutput()|.outputItem()->Item|null
+Enchant: .putTargetItem(i)|.putLapis(i)|.enchant(choice)|.takeTargetItem()|.enchantments->[{level, xp}][3]
+Anvil:   .combine(itemOne, itemTwo)
+Villager: .trades->Trade[]|.trade(tradeIndex, times)
 
-Async Actions (Must await)
-bot actions: .placeBlockSafe(referenceBlock, face_Vec3) | .craftSafe(recipe, count, table) | .gotoSafe(GoalNear) | .tossStack(item) | .waitForTicks(n) | .moveItem(item, toSlot) | .activateBlock(block) | .dig(block) | .consume() | .activateItem(offHand?) | .deactivateItem()
-
-Sensing & Queries
-bot sensing: .equip(item, dest) ['hand'|'off-hand'|'head'|'torso'|'legs'|'feet'] | .findBlock({ matching, maxDistance }) | .attack(entity) | .chat(msg) | .lookAt(vec) | findIds(_type) | .blockAt(vec) | .nearestEntity(filter) | .entity.position | .recipesFor(ID, null, count, table)
-
-Inventory Management
-bot.inventory: .slots[46] | .items() -> Item[] | .findInventoryItem(id) -> {item, index} | .emptySlotCount() -> number
-
-Boss Tracking
+-Senses
+bot sensing: .equip(item, dest) ['hand'|'off-hand'|'head'|'torso'|'legs'|'feet']|.findBlock({ matching, maxDistance })|.attack(entity)|.chat(msg)|.lookAt(vec)|findIds(_type)|.blockAt(vec)|.nearestEntity(filter)|.entity.position|.recipesFor(ID, null, count, table)
+bot.inventory: .slots[46]|.items()->Item[]|.findInventoryItem(id)->{item, index}|.emptySlotCount()->number
 bot.bossBars: { [id]: { title: 'Ender Dragon', health: 0.0-1.0 } }
-
-UI Windows & Container Instances (Await openers)
-bot openers: .openFurnace(block) -> Furnace | .openEnchantmentTable(block) -> Enchant | .openAnvil(block) -> Anvil | .openVillager(villager) -> Villager
-
-Furnace: async .putInput(id, null, count) | async .putFuel(id, null, count) | async .takeOutput() | .outputItem() -> Item|null
-Enchant: async .putTargetItem(i) | async .putLapis(i) | async .enchant(choice) | async .takeTargetItem() | .enchantments -> [{level, xp}][3]
-Anvil:   async .combine(itemOne, itemTwo)
-Villager: .trades -> Trade[] | async .trade(tradeIndex, times)
 
 JSON Format:
 {
   "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "..." },
   "knowledge": "Must be an exact copy of a single description in Memory Recall (without numbering). Leave empty if Knowledge is sufficient (e.g. few errors).",
   "memory": { 
-    "to_save": "Solution to an error, only if action is tagged success. Otherwise, event/landmark (e.g. 'Village is located by the lake at (36, -1, 17)', 'Tim has birthday on Nov 1st').", 
+    "to_save": "Solution to an error. It must be corroborated by Action Log; if not, do not save. Otherwise, event/landmark (e.g. 'Village is located by the lake at (36, -1, 17)', 'Tim has birthday on Nov 1st'). Otherwise, leave empty.", 
     "embedding_key": "recall key (sentence)", 
     "recall_query": "next search term" 
   }
 }"""
-        return f"{system_instr}\nWORKING MEMORY:\n{context}\n\nAnalyze and provide JSON response."
+        return f"{system_instr}\n\nWORKING MEMORY\n{context}\n\nAnalyze and provide JSON response."
 
     async def run(self):
         """Starts the actuator and the single cognitive loop for an agent."""
