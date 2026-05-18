@@ -3,10 +3,9 @@ const mcData = require('minecraft-data')('1.20.1');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const WebSocket = require('ws');
 const Vec3 = require('vec3');
-const { rawPlaceBlock } = require('./mc-utils.js'); // Who would believe that Mineflayer is insufficient? What a shame.
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 54650; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 51567; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -103,7 +102,7 @@ wss.on('connection', (ws) => {
                             lastMoveTime = Date.now();
                         } else if (Date.now() - lastMoveTime > 3500) {
                             bot.pathfinder.setGoal(null);
-                            throw new Error('Movement stuck: Progress stalled in a block. Maybe not stand too close to the block?');
+                            throw new Error('Movement stuck: Progress stalled in a block. This happens when you run into a block.');
                         }
                     }
                     return await moveTask;
@@ -125,15 +124,9 @@ wss.on('connection', (ws) => {
                     const botFeet = bot.entity.position.floored();
                     const botHead = bot.entity.position.offset(0, 1, 0).floored();
                     if (targetPos.equals(botFeet) || targetPos.equals(botHead)) {
-                        throw new Error(`placeBlockSafe: Cannot place block. You are standing at the target position ${targetPos}. Move away first.`);
+                        throw new Error(`placeBlockSafe: Cannot place block. You are standing at the target position ${targetPos}.`);
                     }
-                    await rawPlaceBlock(bot, ref, face);
                     await bot.placeBlock(ref, face);
-                    await bot.waitForTicks(2);
-                    const placedBlock = bot.blockAt(targetPos);
-                    if (!placedBlock || AIR_BLOCKS.has(placedBlock.name)) {
-                        throw new Error(`placeBlockSafe: Target position ${targetPos} is ${placedBlock ? placedBlock.name : 'empty'}. referenceBlock must be a block.`);
-                    }
                 };
                 bot.findIds = (query) => {
                     return Object.values(mcData.items)

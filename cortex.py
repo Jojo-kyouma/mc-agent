@@ -47,9 +47,9 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.KNOWLEDGE: 3,
-        MentalSlot.SOCIAL: 5,
-        MentalSlot.EPISODIC: 5
+        MentalSlot.KNOWLEDGE: 2,
+        MentalSlot.SOCIAL: 3,
+        MentalSlot.EPISODIC: 3
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
@@ -86,6 +86,10 @@ class WorkingMemory:
 
     def to_string(self) -> str:
         """Pipeline to consolidate working memory into a single string."""
+        now = datetime.now()
+        day = now.day
+        suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+        current_date = now.strftime(f"{day}{suffix} %b")
         context_parts = [
             f"Player Inventory & State\n{json.dumps(self.status)}",
             f"Environment\n{json.dumps(self.environment)}"
@@ -94,7 +98,7 @@ class WorkingMemory:
         mappings = [
             ("Knowledge (Stable)", self.knowledge),
             ("Social Dialogue", self.social),
-            ("Action Log (with Feedback)", self.episodic)
+            (f"Action Log (with Feedback) [{current_date}]", self.episodic)
         ]
 
         for header, items in mappings:
@@ -240,7 +244,7 @@ class Cortex:
             payload = ActionFactory.create_payload(action)
             await self.websocket.send(payload)
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.memory.update_slot(MentalSlot.EPISODIC, f"[{timestamp}] Attempt: {action.content}")
+            self.memory.update_slot(MentalSlot.EPISODIC, f"Attempt: {action.description}: {action.content}")
 
     async def listen_to_senses(self):
         """Continuously process updates from the Mineflayer bot."""
@@ -267,7 +271,7 @@ class Cortex:
                 elif data.get('type') == 'ITEM_BREAK':
                     return
                 elif data.get('type') == 'AGENT_ATTACKED':
-                    self._handle_priority(PRIORITY_THRESHOLD, "Agent is attacked")
+                    self._handle_priority(5, "Agent is attacked")
 
                 # Lifecycle
                 elif data.get('type') == 'FINISHED':
@@ -383,12 +387,16 @@ class Cortex:
         results = []
 
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT content, embedding FROM long_term_memory")
-            for content, embedding_blob in cursor:
+            cursor = conn.execute("SELECT content, timestamp, embedding FROM long_term_memory")
+            for content, ts_str, embedding_blob in cursor:
                 vec = torch.tensor(json.loads(embedding_blob.decode('utf-8')))
                 sim = torch.nn.functional.cosine_similarity(query_vec.unsqueeze(0), vec.unsqueeze(0)).item()
                 if sim >= threshold:
-                    results.append((sim, content))
+                    ts = datetime.fromisoformat(ts_str)
+                    d = ts.day
+                    sfx = 'th' if 11 <= d <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')
+                    formatted_ts = ts.strftime(f"{d}{sfx} %b")
+                    results.append((sim, f"[{formatted_ts}] {content}"))
         
         results.sort(key=lambda x: x[0], reverse=True)
         return [item[1] for item in results[:TOP_K_RECALL]]
@@ -454,14 +462,15 @@ class Cortex:
         return None, None, prompt, None
 
     def _build_brain_prompt(self, context: str):
-        system_instr = """Role: Minecraft Agent using Mineflayer API. Work towards defeating Ender Dragon.
+        system_instr = """Role: Minecraft Agent using Mineflayer API.
 
 RULES
-Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Check Player Inventory & State, Environment, and Action Log (with Feedback) before coding.
+Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Check Player Inventory & State, Environment, Environment/entities for dropped items ready to be picked up, and Action Log (with Feedback) before coding.
 Observe: If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field. In Social Dialogue, player's might give you useful advice.
-Problem Solve: On error and failure, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition only after success.
+Problem Solve: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition after success.
 Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. 
 Interaction: Range <4.5m + Line of Sight.
+Chat: Be mindful of when to use Chat. Chat messages should only reflect major events/milestones.
 
 API RULES (Strict adherence required. { } encapsulates a single object parameter.)
 -Classes, Properties & Names
@@ -474,7 +483,7 @@ mcData: mcData.blocksByName['name'].id|mcData.itemsByName['name'].id
 Valid Item/Block Patterns: _log, _planks, _pickaxe, _axe, _shovel, _sword, _door, _button, _pressure_plate, cooked_, raw_, _ingot, deepslate_*_ore, diamond, coal, cobblestone, dirt, sand, gravel, flint_and_steel, bucket, torch, crafting_table, furnace, chest, redstone_dust, lever, piston, obsidian, crying_obsidian, blaze_rod, blaze_powder, ender_pearl, eye_of_ender, end_portal_frame, bed, bow, arrow, shield, _helmet, _chestplate, _leggings, _boots
 
 -Async Actions (Must await)
-bot actions: .placeBlockSafe(referenceBlock, face_Vec3)|.craftSafe(recipe, count, table)|.gotoSafe(GoalNear)|.tossStack(item)|.waitForTicks(n)|.moveItem(item, toSlot)|.activateBlock(block)|.dig(block)|.consume()|.activateItem(offHand?)|.deactivateItem()|.setControlState(['forward', 'back', 'left', 'right', 'jump', 'sprint', 'sneak'], true/false)
+bot actions: .placeBlockSafe(referenceBlock, face_Vec3)|.craftSafe(recipe, count, table)|.gotoSafe(GoalNear)|.tossStack(item)|.waitForTicks(n)|.moveItem(item, toSlot)|.activateBlock(block)|.dig(block)|.consume()|.activateItem(offHand?)|.deactivateItem()|.setControlState(['forward'|'back'|'left'|'right'|'jump'|'sprint'|'sneak'], bool)
 bot openers: .openFurnace(block)->Furnace|.openEnchantmentTable(block)->Enchant|.openAnvil(block)->Anvil|.openVillager(villager)->Villager
 Furnace: .putInput(id, null, count)|.putFuel(id, null, count)|.takeOutput()|.outputItem()->Item|null
 Enchant: .putTargetItem(i)|.putLapis(i)|.enchant(choice)|.takeTargetItem()|.enchantments->[{level, xp}][3]
@@ -488,8 +497,8 @@ bot.bossBars: { [id]: { title: 'Ender Dragon', health: 0.0-1.0 } }
 
 JSON Format:
 {
-  "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "..." },
-  "knowledge": "Must be an exact copy of a single description in Memory Recall. Don't include numbering. Leave empty if Knowledge is sufficient (e.g. few errors).",
+  "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "Three words." },
+  "knowledge": "Add knowledge from Memory Recall. Leave empty if Knowledge is sufficient (e.g. few Action Log errors). Writing something here will pop the oldest entry from Knowledge.",
   "memory": { 
     "to_save": "Solution to an error. It must be corroborated by Action Log; if not, do not save. Otherwise, event/landmark (e.g. 'Village is located by the lake at (36, -1, 17)', 'Tim has birthday on Nov 1st'). Otherwise, leave empty.", 
     "embedding_key": "recall key (sentence)", 
