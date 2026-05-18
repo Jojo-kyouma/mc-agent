@@ -464,9 +464,8 @@ class Cortex:
         system_instr = """Role: Minecraft Agent using Mineflayer API.
 
 RULES
-Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Check Player Inventory & State, Environment, Environment/entities for dropped items ready to be picked up, and Action Log (with Feedback) before coding.
-Observe: If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field. In Social Dialogue, player's might give you useful advice.
-Problem Solve: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition after success.
+Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Verify against Player Inventory & State, Environment, Environment/entities for dropped items ready to be picked up, and Action Log (with Feedback) before coding.
+Problem Solve: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure.
 Goals: Pursue complex objectives; use for-loops. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. 
 Interaction: Range <4.5m + Line of Sight.
 

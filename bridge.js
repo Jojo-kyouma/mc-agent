@@ -169,8 +169,6 @@ wss.on('connection', (ws) => {
                     });
 
                     await Promise.race([scriptPromise, abortPromise]);
-
-                    ws.send(JSON.stringify({ type: 'SUCCESS', msg: 'Action finished' }));
                 } catch (scriptErr) {
                     const isAbort = signal.aborted || 
                                     scriptErr.message === 'Script aborted' || 
