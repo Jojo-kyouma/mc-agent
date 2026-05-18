@@ -102,7 +102,7 @@ wss.on('connection', (ws) => {
                             lastMoveTime = Date.now();
                         } else if (Date.now() - lastMoveTime > 3500) {
                             bot.pathfinder.setGoal(null);
-                            throw new Error('Movement stuck: Progress stalled in a block. This happens when you run into a block.');
+                            throw new Error('Movement stuck: Progress stalled in a block. This happens when you run into a block. Move away. If you are stuck in a hole, dig or jump out.');
                         }
                     }
                     return await moveTask;
