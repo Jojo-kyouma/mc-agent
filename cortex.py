@@ -47,9 +47,9 @@ class WorkingMemory:
     last_recall_query: Optional[str] = None
 
     SLOT_LIMITS = {
-        MentalSlot.KNOWLEDGE: 2,
-        MentalSlot.SOCIAL: 3,
-        MentalSlot.EPISODIC: 3
+        MentalSlot.KNOWLEDGE: 4,
+        MentalSlot.SOCIAL: 5,
+        MentalSlot.EPISODIC: 4
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
