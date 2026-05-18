@@ -223,9 +223,10 @@ class Cortex:
 
     def _handle_priority(self, value: int, reason: str):
         """Increments priority and triggers thinking if threshold is met."""
-        self.priority_accumulator += value
-        if time.time() - self.last_reprioritization_time < REPRIORITIZATION_COOLDOWN:
+        if time.time() - self.last_reprioritization_time < REPRIORITIZATION_COOLDOWN or self.thinking_trigger.is_set():
+            self.priority_accumulator = 0
             return
+        self.priority_accumulator += value
         if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
             if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:

@@ -226,6 +226,7 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify(status));
     };
     const onChat = (username, message) => {
+        if (username === bot.username) return;
         if (ws.readyState !== WebSocket.OPEN) return;
         let processedMessage = message;
         if (processedMessage.endsWith(']') && !processedMessage.startsWith('[')) {
