@@ -223,10 +223,9 @@ class Cortex:
 
     def _handle_priority(self, value: int, reason: str):
         """Increments priority and triggers thinking if threshold is met."""
+        self.priority_accumulator += value
         if time.time() - self.last_reprioritization_time < REPRIORITIZATION_COOLDOWN:
             return
-
-        self.priority_accumulator += value
         if self.priority_accumulator >= PRIORITY_THRESHOLD:
             print(f"[*] RE-PRIORITIZE: Interrupting current behavior for: {reason}")
             if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
@@ -468,9 +467,8 @@ RULES
 Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Check Player Inventory & State, Environment, Environment/entities for dropped items ready to be picked up, and Action Log (with Feedback) before coding.
 Observe: If conflict between Action Log and Recalled Memories/Knowledge, always trust Action Log more. Be mindful of this when saving to memory in "to_save" field. In Social Dialogue, player's might give you useful advice.
 Problem Solve: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure. Resume ambition after success.
-Goals: Pursue complex, looped objectives. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. 
+Goals: Pursue complex objectives; use for-loops. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. 
 Interaction: Range <4.5m + Line of Sight.
-Chat: Be mindful of when to use Chat. Chat messages should only reflect major events/milestones.
 
 API RULES (Strict adherence required. { } encapsulates a single object parameter.)
 -Classes, Properties & Names
