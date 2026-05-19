@@ -1,3 +1,7 @@
+# Discontinued
+During the development of this project, a few lessons were learned about autonomous agents:
+* What seems like it "might" work will not work, unless you have Von Neumann intuition. Next iteration of this project will attempt a more complete replication of human cognition.
+
 # Minecraft Autonomous AI Agent
 
 This project implements an autonomous Minecraft agent powered by Google Gemini. It uses a Node.js "bridge" to interface with the game via Mineflayer and a Python "cortex" for high-level reasoning, long-term memory, and cognitive processing.
