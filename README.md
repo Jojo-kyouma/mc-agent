@@ -1,6 +1,7 @@
 # Discontinued
 During the development of this project, a few lessons were learned about autonomous agents:
 * What seems like it "might" work will not work, unless you have Von Neumann intuition. Next iteration of this project will attempt a more complete replication of human cognition.
+* If bringing this back, will need to give agent better "vision" and an autopilot (reusing scripts and scripts will need to be made general, not spesific to coordinate for example.)
 
 # Minecraft Autonomous AI Agent
 
