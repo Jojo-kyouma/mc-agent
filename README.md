@@ -49,16 +49,21 @@ uv sync
 
 ## Subjects touched upon
 
-### Functionalist Memory Systems
+### Agentic AI
+The minecraft environment can be used to explore limitations/opportunities of Agentic AI. Agentic AI might primarily interact with APIs, and that is precisely what this agent does.
+
+### Below are listed ambitious goals that have been discontinued
+
+#### Functionalist Memory Systems
 In alignment with functionalist philosophy, this project treats consciousness and agency as products of informational processing rather than biological substrate. The architecture focuses on the management of two distinct memory layers:
 * **Volatile Working Memory:** Real-time environmental data acquisition and immediate spatial awareness (via `scanEnv`).
 * **Persistent Long-Term Memory:** State serialization (JSON-based) that ensures a continuous identity across sessions.
 * **Significance:** Most LLM implementations are "stateless." This project prototypes an agent that maintains a coherent narrative and state history, solving the problem of informational continuity in autonomous systems.
 
-### Embodied Agency in Simulated Environments
+#### Embodied Agency in Simulated Environments
 This project serves as a low-cost testbed for **Embodied AI**. While traditional AI exists in a vacuum of text, this agent must navigate the "friction" of a physical world (gravity, collisions, and pathfinding limits).
 * **Reasoning-to-Action Translation:** The core challenge addressed is the middleware layer—converting high-level intent (e.g., "secure resources") into precise motor commands (e.g., vector-based movement and block manipulation).
 * **Robotics Prototyping:** By simulating the constraints of a humanoid body, the project develops logic for error recovery and adaptation that is directly applicable to real-world humanoid robotics and industrial automation.
 
-### Social Experiment
+#### Social Experiment
 Project is quite resource-efficient. It should be possible to instantiate 100 bots in the minecraft world, encourage them to be social, and watch them build a civilisation together, all that with only a i7, linux and a headless minecraft server.
