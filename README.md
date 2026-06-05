@@ -1,7 +1,6 @@
 ## Discontinued
 During the development of this project, a few lessons were learned about autonomous agents:
 * What seems like it "might" work will not work, unless you have Von Neumann intuition. Next iteration of this project will attempt a more complete replication of human cognition, or other ingenious approach.
-* The Gemini "Brain" creates a sequence of actions. This architecture seems necessary to not overload Gemini. The crux is robustness. A sequence is fragile and prone to break. An ingenious solution that still maintains high-level sequential behaviour will need to retribute the fragility of a sequence. Behaviour trees and proper verification checks come to mind.
 
 # Minecraft Autonomous AI Agent
 
