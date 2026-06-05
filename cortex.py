@@ -34,6 +34,10 @@ class MentalSlot(Enum):
     ENVIRONMENT = auto()   # Data structure of surrounding blocks
     SOCIAL = auto()        # Recent chat messages and the player who said them
     EPISODIC = auto()      # Recent actions and their outcomes (success, failure, info)
+    REFLECTION = auto()    # Agent's internal reasoning/evaluation of past actions
+    LONG_TERM_PLANNING = auto() # Summary of long-term goals
+    SHORT_TERM_PLANNING = auto() # Summary of short-term goals
+    PERSONA = auto()      # Agent's identity and values
 
 @dataclass
 class WorkingMemory:
@@ -43,13 +47,22 @@ class WorkingMemory:
     social: List[str] = field(default_factory=list)
     episodic: List[str] = field(default_factory=list)
     knowledge: List[str] = field(default_factory=list)
+    reflection: List[str] = field(default_factory=list)
+    long_term_planning: List[str] = field(default_factory=list)
+    short_term_planning: List[str] = field(default_factory=list)
+    persona: List[str] = field(default_factory=list)
     recalled_memories: List[str] = field(default_factory=list)
     last_recall_query: Optional[str] = None
+    available_scripts: Dict[str, str] = field(default_factory=dict)
 
     SLOT_LIMITS = {
         MentalSlot.KNOWLEDGE: 4,
         MentalSlot.SOCIAL: 5,
-        MentalSlot.EPISODIC: 4
+        MentalSlot.EPISODIC: 5,
+        MentalSlot.REFLECTION: 1,
+        MentalSlot.LONG_TERM_PLANNING: 1,
+        MentalSlot.SHORT_TERM_PLANNING: 1,
+        MentalSlot.PERSONA: 1
     }
 
     def update_slot(self, slot: MentalSlot, data: Any):
@@ -69,6 +82,10 @@ class WorkingMemory:
             MentalSlot.KNOWLEDGE: "knowledge",
             MentalSlot.SOCIAL: "social",
             MentalSlot.EPISODIC: "episodic",
+            MentalSlot.REFLECTION: "reflection",
+            MentalSlot.LONG_TERM_PLANNING: "long_term_planning",
+            MentalSlot.SHORT_TERM_PLANNING: "short_term_planning",
+            MentalSlot.PERSONA: "persona",
         }
 
         attr_name = attr_map.get(slot)
@@ -90,15 +107,22 @@ class WorkingMemory:
         day = now.day
         suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
         current_date = now.strftime(f"{day}{suffix} %b")
-        context_parts = [
+        context_parts = []
+        if self.persona:
+            context_parts.append(f"Agent Identity & Values\n" + "\n".join(self.persona))
+
+        context_parts.extend([
             f"Player Inventory & State\n{json.dumps(self.status)}",
-            f"Environment\n{json.dumps(self.environment)}"
-        ]
+            f"Environment (20 radius from bot)\n{json.dumps(self.environment)}"
+        ])
 
         mappings = [
             ("Knowledge (Stable)", self.knowledge),
             ("Social Dialogue", self.social),
-            (f"Action Log (with Feedback) [{current_date}]", self.episodic)
+            (f"Action Log (with Feedback) [{current_date}]", self.episodic),
+            ("Long-term Planning", self.long_term_planning),
+            ("Short-term Planning", self.short_term_planning),
+            ("Reflection", self.reflection),
         ]
 
         for header, items in mappings:
@@ -129,12 +153,14 @@ class MinecraftAction(BaseModel):
 class ActionFactory:
     """Helper. Translates high-level Action objects into JSON payloads."""
     @staticmethod
-    def create_payload(action: MinecraftAction) -> str:
+    def create_payload(action: MinecraftAction, library: Dict[str, str] = None) -> str:
         payload = {
             "type": "ACTION",
             "description": action.description,
             "behaviour_script": action.content
         }
+        if library:
+            payload["library"] = library
         return json.dumps(payload)
 
 # --- Runtime ---
@@ -237,14 +263,13 @@ class Cortex:
             asyncio.create_task(self.send_abort())
             self.thinking_trigger.set()
 
-    async def send_action(self, action: MinecraftAction):
+    async def send_action(self, action: MinecraftAction, library: Dict[str, str] = None):
         """Standard method to send an action to the Node.js body."""
         if self.websocket:
             self.priority_accumulator = 0
-            payload = ActionFactory.create_payload(action)
+            payload = ActionFactory.create_payload(action, library)
             await self.websocket.send(payload)
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.memory.update_slot(MentalSlot.EPISODIC, f"Attempt: {action.description}: {action.content}")
+            self.memory.update_slot(MentalSlot.EPISODIC, f"Attempt: {action.description}")
 
     async def listen_to_senses(self):
         """Continuously process updates from the Mineflayer bot."""
@@ -276,14 +301,6 @@ class Cortex:
                 # Lifecycle
                 elif data.get('type') == 'FINISHED':
                     self.thinking_trigger.set()
-                elif data.get('type') == 'SUCCESS':
-                    msg = data.get('message', 'Action finished')
-                    if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
-                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"SUCCESS:", 1)
-                elif data.get('type') == 'FAILURE':
-                    msg = data.get('message')
-                    if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
-                        self.memory.episodic[-1] = self.memory.episodic[-1].replace("Attempt:", f"FAIL ({msg}):", 1)
                 elif data.get('type') == 'ERROR':
                     msg = data.get('message')
                     if self.memory.episodic and "Attempt:" in self.memory.episodic[-1]:
@@ -319,6 +336,11 @@ class Cortex:
                     self.memory.social = as_list("social")
                     self.memory.episodic = as_list("episodic")
                     self.memory.knowledge = as_list("knowledge")
+                    self.memory.reflection = as_list("reflection")
+                    self.memory.long_term_planning = as_list("long_term_planning")
+                    self.memory.short_term_planning = as_list("short_term_planning")
+                    self.memory.persona = as_list("persona")
+                    self.memory.available_scripts = data.get("available_scripts", {})
                     self.memory.recalled_memories = as_list("recalled_memories")
                     self.memory.last_recall_query = data.get("last_recall_query")
                 print(f"[*] Loaded working memory for {self.agent_name}")
@@ -355,10 +377,15 @@ class Cortex:
             return
         
         content = memory_data.get("to_save")
+        script_code = memory_data.get("script_to_save")
+        script_name = memory_data.get("script_name")
         embedding_key = memory_data.get("embedding_key")
         
-        if not content or not embedding_key:
+        if (not content and not script_code) or not embedding_key:
             return
+
+        if script_code and script_name:
+            content = json.dumps({"type": "script", "name": script_name, "code": script_code})
 
         dup_id = self._find_duplicate_id(embedding_key)
         record = Record(
@@ -379,37 +406,57 @@ class Cortex:
                     (record.id, record.content, record.embedding_description, embedding_blob, record.timestamp.isoformat())
                 )
 
-    async def recall(self, query: str, threshold: float = 0.4) -> List[str]:
+    async def recall(self, query: str, threshold: float = 0.4) -> tuple[List[str], Dict[str, str]]:
         """Finds the top K most relevant memories based on a query string."""
-        if not query: return []
+        if not query: return [], {}
         
         query_vec = torch.tensor(self.embedding_model.encode(query))
         results = []
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT content, timestamp, embedding FROM long_term_memory")
-            for content, ts_str, embedding_blob in cursor:
+            for content_str, ts_str, embedding_blob in cursor:
                 vec = torch.tensor(json.loads(embedding_blob.decode('utf-8')))
                 sim = torch.nn.functional.cosine_similarity(query_vec.unsqueeze(0), vec.unsqueeze(0)).item()
                 if sim >= threshold:
-                    ts = datetime.fromisoformat(ts_str)
-                    d = ts.day
-                    sfx = 'th' if 11 <= d <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')
-                    formatted_ts = ts.strftime(f"{d}{sfx} %b")
-                    results.append((sim, f"[{formatted_ts}] {content}"))
+                    results.append((sim, content_str, ts_str))
         
         results.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in results[:TOP_K_RECALL]]
+        top_results = results[:TOP_K_RECALL]
 
-    async def think(self) -> tuple[Optional[MinecraftAction], Optional[str], str, Optional[dict]]:
+        context_strings = []
+        scripts = {}
+        for sim, content_str, ts_str in top_results:
+            ts = datetime.fromisoformat(ts_str)
+            d = ts.day
+            sfx = 'th' if 11 <= d <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')
+            formatted_ts = ts.strftime(f"{d}{sfx} %b")
+
+            try:
+                data = json.loads(content_str)
+                if isinstance(data, dict) and data.get("type") == "script":
+                    context_strings.append(f"[{formatted_ts}] Library Function: {data['name']}()")
+                    scripts[data['name']] = data['code']
+                    continue
+            except:
+                pass
+            
+            context_strings.append(f"[{formatted_ts}] {content_str}")
+
+        return context_strings, scripts
+
+    async def think(self) -> tuple[Optional[MinecraftAction], Optional[str], str, Optional[dict], Dict[str, str]]:
         """
         High-level reasoning cycle. Uses Gemini to process working memory,
         update internal cognitive states, and return a structured action and raw response.
         """
         if self.memory.last_recall_query:
-            self.memory.recalled_memories = await self.recall(self.memory.last_recall_query)
+            recalled_strings, recalled_scripts = await self.recall(self.memory.last_recall_query)
+            self.memory.recalled_memories = recalled_strings
+            self.memory.available_scripts = recalled_scripts
         else:
             self.memory.recalled_memories = []
+            self.memory.available_scripts = {}
 
         context = self.memory.to_string()
         prompt = self._build_brain_prompt(context)
@@ -432,6 +479,16 @@ class Cortex:
                 if isinstance(new_k, str) and new_k.strip():
                     self.memory.update_slot(MentalSlot.KNOWLEDGE, new_k.strip())
                 
+                # Update Planning and Persona
+                for key, slot in [
+                    ("long_term_planning", MentalSlot.LONG_TERM_PLANNING),
+                    ("short_term_planning", MentalSlot.SHORT_TERM_PLANNING),
+                    ("persona", MentalSlot.PERSONA)
+                ]:
+                    val = res_data.get(key)
+                    if isinstance(val, str) and val.strip():
+                        self.memory.update_slot(slot, val.strip())
+
                 # Update Memory search state
                 memory_data = res_data.get("memory", {})
                 self.memory.last_recall_query = memory_data.get("recall_query")
@@ -444,7 +501,7 @@ class Cortex:
                 description = behaviour.get("description")
                 
                 if script:
-                    return (MinecraftAction(description=description, content=script), raw_json, prompt, memory_data)
+                    return (MinecraftAction(description=description, content=script), raw_json, prompt, memory_data, self.memory.available_scripts)
                 break
             except Exception as e:
                 err_str = str(e)
@@ -459,13 +516,13 @@ class Cortex:
                 print(f"Brain reasoning error: {e}")
                 break
 
-        return None, None, prompt, None
+        return None, None, prompt, None, {}
 
     def _build_brain_prompt(self, context: str):
         system_instr = """Role: Minecraft Agent using Mineflayer API.
 
 RULES
-Verify: Write several outcome checks per script (e.g., count items/blocks). Call `bot.recordFailure(msg)` to catch failures. Verify against Player Inventory & State, Environment, Environment/entities for dropped items ready to be picked up, and Action Log (with Feedback) before coding.
+Verify: Write several outcome checks per script (e.g., count items/blocks). Verify against Player Inventory & State, Environment, Environment/entities for dropped items ready to be picked up, and Action Log (with Feedback) before coding.
 Problem Solve: On error, use try-catch and pivot to diagnostic, single-action scripts to identify cause. You must call `bot.recordError(msg)` to catch failure.
 Goals: Pursue complex objectives; use for-loops. Build on prior successes. Discover efficient strategies. Aggressively pursue new goals. 
 Interaction: Range <4.5m + Line of Sight.
@@ -495,10 +552,15 @@ bot.bossBars: { [id]: { title: 'Ender Dragon', health: 0.0-1.0 } }
 
 JSON Format:
 {
-  "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "Three words." },
+  "behaviour": { "script": "Logic only. JS (no literal \n). Don't wrap in Async.", "description": "Two things: 1. Three word summary. 2. 'DNA' of the script for debugging againt next iteration runtime outcomes." },
+  "persona": "Current identity and values. Update if needed.",
+  "long_term_planning": "Summary of overarching goals.",
+  "short_term_planning": "Immediate next steps.",
   "knowledge": "Add knowledge from Memory Recall. Leave empty if Knowledge is sufficient (e.g. few Action Log errors). Writing something here will pop the oldest entry from Knowledge.",
   "memory": { 
-    "to_save": "Solution to an error. It must be corroborated by Action Log; if not, do not save. Otherwise, event/landmark (e.g. 'Village is located by the lake at (36, -1, 17)', 'Tim has birthday on Nov 1st'). Otherwise, leave empty.", 
+    "to_save": "Solution to an error or event/landmark. leave empty if script_to_save is provided.", 
+    "script_to_save": "Reusable logic as JS body. Don't include bot, Vec3 etc. as arguments, they are injected.",
+    "script_name": "function_name_for_script (snake_case)",
     "embedding_key": "recall key (sentence)", 
     "recall_query": "next search term" 
   }
@@ -533,7 +595,7 @@ JSON Format:
                     now = time.time()
 
                 self.request_history.append(now)
-                action, raw_json, prompt, memory_data = await self.think()
+                action, raw_json, prompt, memory_data, library = await self.think()
                 
                 # Logging for analysis and debugging
                 if prompt:
@@ -542,7 +604,7 @@ JSON Format:
                         f.write(f"\n--- {datetime.now()} ---\n[INPUT]\n{prompt}\n\n[OUTPUT]\n{raw_json or 'Error'}\n")
 
                 if action:
-                    await self.send_action(action)
+                    await self.send_action(action, library)
                     self.save_to_memory(memory_data)
 
         try:

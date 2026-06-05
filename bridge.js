@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const Vec3 = require('vec3');
 
 // --- CONFIGURATION ---
-const MINECRAFT_PORT = 51567; // Change this to the port shown when you "Open to LAN"
+const MINECRAFT_PORT = 51785; // Change this to the port shown when you "Open to LAN"
 const MC_VERSION = '1.20.1';
 
 // Parse CLI args: node bridge.js [ws_port] [bot_username]
@@ -35,12 +35,14 @@ const bot = mineflayer.createBot({
     version: '1.20.1'
 });
 bot.loadPlugin(pathfinder);
+vec3 = Vec3;
 
 const wss = new WebSocket.Server({ port: WS_PORT });
 let lastScanPos = null;
 let nearbyBlocksCount = new Map(); // name -> count
 let syncTimeout = null;
 let currentAbortController = null;
+const scriptLibrary = new Map(); // name -> wrapper function
 
 wss.on('connection', (ws) => {
     const abortCurrentScript = () => {
@@ -69,63 +71,87 @@ wss.on('connection', (ws) => {
                 const { signal } = currentAbortController;
 
                 // --- Action API & Safety Layer ---
-                bot.craftSafe = async (recipe, count, b) => {
-                    if (!recipe) throw new Error('craftSafe: No recipe provided. Check if you have enough materials.');
+                const AIR_BLOCKS = new Set(['air', 'cave_air', 'void_air']);
+                const UNSOLID_ANCHORS = new Set(['water', 'lava', 'tall_grass', 'grass', 'fire']);
+                /**
+                 * Validates player reach distance to a target position vector.
+                 * @throws {Error} if target is further than 4 blocks away.
+                 */
+                function validateReach(targetPos, actionName) {
+                    const dist = bot.entity.position.distanceTo(targetPos);
+                    if (dist > 4) {
+                        throw new Error(`${actionName}: Target is too far away (${dist.toFixed(2)} blocks). Max reach is 4 blocks.`);
+                    }
+                }
+                /**
+                 * Validates that the bot's crosshair is aimed directly at the intended reference block and face.
+                 * @throws {Error} if looking at the wrong block or face.
+                 */
+                function validateLineOfSight(expectedRefBlock, expectedFace) {
+                    const cursor = bot.blockAtCursor(4); // Raycast line-of-sight up to 4 blocks away
+                    if (!cursor) {
+                        throw new Error('placeBlockSafe: Bot is not looking at any block or raycast failed.');
+                    }
+                    
+                    if (!cursor.position.equals(expectedRefBlock.position)) {
+                        throw new Error(`placeBlockSafe: Look-target mismatch. Expected to look at ${expectedRefBlock.name} at ${expectedRefBlock.position}, but currently looking at ${cursor.name} at ${cursor.position}.`);
+                    }
+                    
+                    if (cursor.face !== bot.spiderFaceToNumber?.(expectedFace) && cursor.face !== expectedFace.y) {
+                        // Fallback checks depending on how your specific environment handles face vector transformations
+                        if (expectedFace.x === 0 && expectedFace.y === 1 && expectedFace.z === 0 && cursor.face !== 1) {
+                            throw new Error(`placeBlockSafe: Face targeting mismatch. You must look at the TOP face (y=1) of the anchor block.`);
+                        }
+                    }
+                }
+                bot.craftSafe = async (recipe, count, tableBlock) => {
+                    if (!recipe) throw new Error('craftSafe: No recipe provided.');
+                    if (tableBlock) validateReach(tableBlock.position, 'craftSafe');
+
                     const resultId = recipe.result.id;
                     const oldAmount = bot.inventory.count(resultId);
-                    await bot.craft(recipe, count, b);
-                    const newAmount = bot.inventory.count(resultId);
-                    if (newAmount <= oldAmount) {
-                        throw new Error(`craftSafe: Verification failed. Inventory count for item ID ${resultId} did not increase.`);
+                    
+                    await bot.craft(recipe, count, tableBlock);
+                    
+                    if (bot.inventory.count(resultId) <= oldAmount) {
+                        throw new Error(`craftSafe: Crafting failed. Inventory count for item ID ${resultId} did not increase.`);
                     }
                 };
-                const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
                 bot.gotoSafe = async (goal) => {
                     if (!goal || typeof goal.isValid !== 'function') {
-                        throw new Error('gotoSafe: Invalid goal. You MUST use "new GoalNear(x, y, z, range)". Raw Vec3 is not allowed.');
+                        throw new Error('gotoSafe: Invalid goal. Must use a dynamic pathfinder Goal mapping configuration.');
                     }
-                    let lastPos = bot.entity.position.clone();
-                    let lastMoveTime = Date.now();
-                    let finished = false;
-                    const moveTask = bot.pathfinder.goto(goal).catch(() => {});
-                    moveTask.finally(() => { finished = true; });
-
-                    while (!finished) {
-                        await sleep(500);
-                        if (signal?.aborted) {
-                            bot.pathfinder.setGoal(null);
-                            throw new Error('Script aborted');
-                        }
-                        const distanceMoved = bot.entity.position.distanceTo(lastPos);
-                        if (distanceMoved > 0.3) {
-                            lastPos = bot.entity.position.clone();
-                            lastMoveTime = Date.now();
-                        } else if (Date.now() - lastMoveTime > 3500) {
-                            bot.pathfinder.setGoal(null);
-                            throw new Error('Movement stuck: Progress stalled in a block. This happens when you run into a block. Move away. If you are stuck in a hole, dig or jump out.');
-                        }
-                    }
-                    return await moveTask;
+                    // Mineflayer pathfinder naturally handles signal abort errors and timeout events internally
+                    await bot.pathfinder.goto(goal);
                 };
+
                 bot.placeBlockSafe = async (ref, face) => {
-                    if (!ref || !ref.position || typeof ref.name === 'undefined') {
-                        throw new Error('placeBlockSafe: referenceBlock is invalid. You MUST pass a Block object (from findBlock/blockAt), NOT an Item or a Vec3.');
+                    if (!ref || !ref.position) throw new Error('placeBlockSafe: Reference block is completely missing or invalid.');
+                    if (!face) throw new Error('placeBlockSafe: Face vector direction must be specified.');
+                    
+                    // 1. Distance Reach Validation
+                    validateReach(ref.position, 'placeBlockSafe');
+
+                    // 2. Inventory and Structural Soundness Validations
+                    const heldItem = bot.heldItem;
+                    if (!heldItem || AIR_BLOCKS.has(heldItem.name)) throw new Error('placeBlockSafe: Hand is empty.');
+                    if (AIR_BLOCKS.has(ref.name) || UNSOLID_ANCHORS.has(ref.name)) {
+                        throw new Error(`placeBlockSafe: Cannot anchor placement on unstable surface: ${ref.name}`);
                     }
-                    if (!face || typeof face.x !== 'number') {
-                        throw new Error('placeBlockSafe: face must be a unit Vec3 offset (e.g. new Vec3(0, 1, 0)).');
-                    }
+
+                    // 3. Collision Box Prevention
                     const targetPos = ref.position.add(face);
-
-                    const existingBlock = bot.blockAt(targetPos);
-                    if (existingBlock && !AIR_BLOCKS.has(existingBlock.name)) {
-                        return;
-                    }
-
                     const botFeet = bot.entity.position.floored();
                     const botHead = bot.entity.position.offset(0, 1, 0).floored();
                     if (targetPos.equals(botFeet) || targetPos.equals(botHead)) {
-                        throw new Error(`placeBlockSafe: Cannot place block. You are standing at the target position ${targetPos}.`);
+                        throw new Error(`placeBlockSafe: Cannot execute placement. You are currently standing inside target coordinate ${targetPos}. Step back.`);
                     }
+
+                    // 4. Pre-Placement Raycast Line-of-Sight Verification
+                    validateLineOfSight(ref, face);
+
+                    // 5. Execution
                     await bot.placeBlock(ref, face);
                 };
                 bot.findIds = (query) => {
@@ -133,21 +159,32 @@ wss.on('connection', (ws) => {
                         .filter(i => i.name.includes(query))
                         .map(i => i.id);
                 };
-                // Feedback system
-                bot.recordError = (m) => { throw new Error(m); };
-                bot.recordFailure = (m) => {
-                    const err = new Error(m);
-                    err.name = 'FailureError';
-                    throw err;
+                bot.recordError = (msg) => {
+                    throw new Error(msg);
+                };
+                /**
+                 * Simple verification helper for sequential behavior logic.
+                 * @param {Function} predicate - Async function returning boolean.
+                 * @param {string} failureMessage - Message to log if false.
+                 * @returns {Promise<boolean>}
+                 */
+                bot.verify = async (predicate, failureMessage) => {
+                    const result = await predicate();
+                    if (!result && failureMessage) {
+                        console.log(`[*] Verification failed: ${failureMessage}`);
+                    }
+                    return result;
                 };
 
                 // --- Execute the behavior script ---
                 try {
+                    const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
                     const handler = {
                         get(target, prop) {
                             const val = Reflect.get(target, prop);
                             if (typeof val === 'function') {
                                 return (...args) => {
+                                    
                                     if (signal.aborted) throw new Error('Script aborted');
                                     return val.apply(target, args);
                                 };
@@ -160,9 +197,18 @@ wss.on('connection', (ws) => {
                     };
                     const botProxy = new Proxy(bot, handler);
 
-                    const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
-                    const execute = new AsyncFunction('bot', 'Vec3', 'mcData', 'GoalNear', data.behaviour_script);
-                    const scriptPromise = execute(botProxy, Vec3, mcData, goals.GoalNear);
+                    if (data.library) {
+                        for (const [name, code] of Object.entries(data.library)) {
+                            const fn = new AsyncFunction('bot', 'Vec3', 'vec3', 'mcData', 'GoalNear', 'goals', code);
+                            scriptLibrary.set(name, (...args) => fn(botProxy, Vec3, vec3, mcData, goals.GoalNear, ...args));
+                        }
+                    }
+
+                    const libNames = Array.from(scriptLibrary.keys());
+                    const libFunctions = Array.from(scriptLibrary.values());
+
+                    const execute = new AsyncFunction('bot', 'Vec3', 'vec3', 'mcData', 'GoalNear', 'goals', ...libNames, data.behaviour_script);
+                    const scriptPromise = execute(botProxy, Vec3, vec3, mcData, goals.GoalNear, ...libFunctions);
                     
                     const abortPromise = new Promise((resolve, reject) => {
                         signal.addEventListener('abort', () => reject(new Error('Script aborted')), { once: true });
@@ -177,10 +223,8 @@ wss.on('connection', (ws) => {
 
                     if (!isAbort) {
                         const errorMsg = scriptErr instanceof Error ? scriptErr.message : String(scriptErr);
-                        const isFailure = scriptErr.name === 'FailureError';
-                        const type = isFailure ? 'FAILURE' : 'ERROR';
-                        console.error(`[${type}]: ${errorMsg}`);
-                        ws.send(JSON.stringify({ type: type, message: errorMsg }));
+                        console.error(`[ERROR]: ${errorMsg}`);
+                        ws.send(JSON.stringify({ type: 'ERROR', message: errorMsg }));
                     }
                 } finally {
                     if (!signal.aborted) {
@@ -310,6 +354,17 @@ wss.on('connection', (ws) => {
             syncEnvironment();
         }
     };
+    const onPlayerCollect = (collector, collectedEntity) => {
+        if (collector === bot.entity) {
+            setImmediate(sendStatus);
+        }
+    };
+    const onInventorySlotUpdate = (slot, oldItem, newItem) => {
+        sendStatus();
+    };
+    const onHeldItemChanged = (heldItem) => {
+        sendStatus();
+    };
     // --- Event Listeners ---
     const activeListeners = [];
     const listenTo = (emitter, event, handler) => {
@@ -325,8 +380,10 @@ wss.on('connection', (ws) => {
     listenTo(bot, 'entitySpawn', onEntityUpdate);
     listenTo(bot, 'entityGone', onEntityUpdate);
     listenTo(bot, 'entityMoved', onEntityUpdate);
-    listenTo(bot.inventory, 'updateSlot', sendStatus);
-    listenTo(bot, 'heldItemChanged', sendStatus);
+
+    listenTo(bot, 'playerCollect', onPlayerCollect);
+    listenTo(bot.inventory, 'updateSlot', onInventorySlotUpdate);
+    listenTo(bot, 'heldItemChanged', onHeldItemChanged);
 
     // Ensure world is loaded and entity is initialized before sending initial sync
     const onSpawn = () => {
