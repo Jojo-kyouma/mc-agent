@@ -1,6 +1,9 @@
 ## Discontinued
 During the development of this project, a few lessons were learned about autonomous agents:
 * What seems like it "might" work will not work, unless you have Von Neumann intuition. Next iteration of this project will attempt a more complete replication of human cognition, or other ingenious approach.
+* Sequences are hard and fragile. If gemini action is a sequence, verification and behaviour trees might make it robust, but it is a shot in the dark. I dont have faith in sequences.
+* Hierarchical learning is more robust. Every action is atomic, and we reuse successful previous scripts from long_term memory.
+* Autonomy is hard. Agent doesnt have a drive, a will to attain aestetically pleasing and elegant solutions. Only reasons. This lack of drive is troublesome because his outcome, like building a ugly house might pass to the agent as great. Adding personality entries to working memory did give him indication of personal drive. He expressed disgust with lack of progress according to working memory action log. That single thing is promising, but overall I witness little autonomy and am skeptical.
 
 # Minecraft Autonomous AI Agent
 
